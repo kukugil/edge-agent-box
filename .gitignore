@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# 早期实验只留脚本：截图、标注和结果里都可能有真实聊天内容和人名，不进版本记录
+experiments/wechat-vision/*
+!experiments/wechat-vision/*.py
+
+# 出图工具的依赖，体积大，可以重新安装
+.tools/mermaid/node_modules/

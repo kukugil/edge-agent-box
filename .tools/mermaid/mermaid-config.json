@@ -1,0 +1,2 @@
+{ "theme": "base", "flowchart": { "htmlLabels": false, "curve": "basis" },
+  "themeVariables": { "fontFamily": "Microsoft YaHei, sans-serif", "fontSize": "15px", "lineColor": "#73726c" } }

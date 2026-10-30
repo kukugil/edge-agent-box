@@ -1,0 +1,26 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "demo_ocr_ground",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "agent.demos.demo_ocr_ground",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "demo_inputs",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "agent.demos.demo_inputs",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "练习1",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "agent.practice.ex01_notepad_ocr",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
