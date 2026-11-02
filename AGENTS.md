@@ -19,6 +19,7 @@
 | `agent/config.json` | 模型服务地址等配置 |
 | `experiments/wechat-vision/` | 早期实验原始脚本和数据。**只读，不要改** |
 | `docs/` | 计划书、交接笔记、学习笔记 |
+| `learning/` | 用户的基础课学习工作区：学习目标、课程和学习记录。不放项目代码 |
 | `.tools/` | 辅助工具：出图脚本和 mermaid-cli（借用本机 Edge 渲染） |
 
 ## 环境和命令
@@ -77,4 +78,5 @@
 - `docs/端侧电商客服-交接笔记.md`：实验记录、Spark 状态、待办事项。开新会话先读它。文件名是历史遗留，内容已改成微信和邮件场景。
 - `docs/端侧AI操作盒子-计划书-v7.md`：当前计划书（v1–v6 是旧版本）。
 - `docs/学习笔记/`：各模块的讲解。
-- 飞书计划书：https://prj2a0apzx.feishu.cn/wiki/YAw4wwhobixnnDkjKMVcM2SZn6b
+- 飞书总领框架文档：https://prj2a0apzx.feishu.cn/wiki/WQX0wyU32iOlQNko1JYcZBexnhf ，管目标、模块、日程和验收标准。
+- 飞书周文档：https://prj2a0apzx.feishu.cn/wiki/VTrLw4fz1iKWRpkxNngcF5TgnAh ，记录当周的问题、难点和做过的事。

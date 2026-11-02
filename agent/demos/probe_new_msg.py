@@ -32,11 +32,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from agent.tools import activate, find_windows, norm, ocr, screenshot, window_rect
+from agent.tools import (activate, capture_window, find_red_dots, find_windows, norm, ocr, screenshot,
+                         window_rect)
 
 # 用独立的 WinDLL 对象：下面要给函数设 argtypes，和 agent.tools 共用 ctypes.windll.user32 会互相影响
 u32 = ctypes.WinDLL('user32', use_last_error=True)
-gdi = ctypes.WinDLL('gdi32')
 k32 = ctypes.WinDLL('kernel32')
 
 HSHELL_REDRAW = 6
@@ -56,13 +56,6 @@ class WNDCLASSW(ctypes.Structure):
                 ('lpszMenuName', wintypes.LPCWSTR), ('lpszClassName', wintypes.LPCWSTR)]
 
 
-class BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [('biSize', wintypes.DWORD), ('biWidth', wintypes.LONG), ('biHeight', wintypes.LONG),
-                ('biPlanes', wintypes.WORD), ('biBitCount', wintypes.WORD), ('biCompression', wintypes.DWORD),
-                ('biSizeImage', wintypes.DWORD), ('biXPelsPerMeter', wintypes.LONG),
-                ('biYPelsPerMeter', wintypes.LONG), ('biClrUsed', wintypes.DWORD), ('biClrImportant', wintypes.DWORD)]
-
-
 # 64 位下句柄是 8 字节，不写 argtypes/restype 会被截成 4 字节，出现莫名其妙的失败
 k32.GetModuleHandleW.restype = wintypes.HMODULE
 u32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
@@ -75,23 +68,8 @@ u32.CreateWindowExW.restype = wintypes.HWND
 u32.RegisterShellHookWindow.argtypes = [wintypes.HWND]
 u32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
 u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-u32.GetWindowDC.argtypes = [wintypes.HWND]
-u32.GetWindowDC.restype = ctypes.c_void_p
-u32.ReleaseDC.argtypes = [wintypes.HWND, ctypes.c_void_p]
-u32.PrintWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, wintypes.UINT]
 u32.GetForegroundWindow.restype = wintypes.HWND
-gdi.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
-gdi.CreateCompatibleDC.restype = ctypes.c_void_p
-gdi.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-gdi.CreateCompatibleBitmap.restype = ctypes.c_void_p
-gdi.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-gdi.SelectObject.restype = ctypes.c_void_p
-gdi.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT, wintypes.UINT,
-                          ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
-gdi.DeleteObject.argtypes = [ctypes.c_void_p]
-gdi.DeleteDC.argtypes = [ctypes.c_void_p]
 
 
 def pid_of(hwnd) -> int:
@@ -143,69 +121,6 @@ def start_shell_hook(on_event):
 
 # ---------- 信号 3、4：两种截图 + 找红色角标 ----------
 
-def print_window(hwnd) -> tuple[Image.Image | None, bool]:
-    """让窗口自己把画面画到内存里（PrintWindow），窗口被挡住时也可能截得到。
-
-    输出：(图, PrintWindow 是否返回成功)。图按 window_rect 裁好，坐标和 screenshot() 的一致。
-    PW_RENDERFULLCONTENT=2：用 GPU 合成的窗口（Qt、Chrome）不加这个标志通常截出来是黑的。
-    """
-    wr = wintypes.RECT()
-    u32.GetWindowRect(hwnd, ctypes.byref(wr))
-    w, h = wr.right - wr.left, wr.bottom - wr.top
-    if w <= 0 or h <= 0:
-        return None, False
-    hdc = u32.GetWindowDC(hwnd)
-    mdc = gdi.CreateCompatibleDC(hdc)
-    bmp = gdi.CreateCompatibleBitmap(hdc, w, h)
-    old = gdi.SelectObject(mdc, bmp)
-    try:
-        ok = bool(u32.PrintWindow(hwnd, mdc, 2))
-        bmi = BITMAPINFOHEADER(biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=w, biHeight=-h,  # 负数=从上往下
-                               biPlanes=1, biBitCount=32, biCompression=0)
-        buf = ctypes.create_string_buffer(w * h * 4)
-        gdi.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bmi), 0)
-    finally:
-        gdi.SelectObject(mdc, old)
-        gdi.DeleteObject(bmp)
-        gdi.DeleteDC(mdc)
-        u32.ReleaseDC(hwnd, hdc)
-    im = Image.frombuffer('RGB', (w, h), buf, 'raw', 'BGRX', 0, 1)
-    # GetWindowRect 含看不见的拖拽边框，裁成和 window_rect 一样的范围
-    l, t, r, b = window_rect(hwnd)
-    return im.crop((l - wr.left, t - wr.top, r - wr.left, b - wr.top)), ok
-
-
-def _runs(idx, gap=2):
-    # 把排好序的下标分成连续的几段，例如 [3,4,5,9,10] → [[3,4,5],[9,10]]
-    out = []
-    for i in idx:
-        if out and i - out[-1][-1] <= gap:
-            out[-1].append(i)
-        else:
-            out.append([i])
-    return out
-
-
-def red_blobs(im: Image.Image) -> list[tuple[int, int, int, int]]:
-    """在左侧（导航栏 + 会话列表）找红色未读角标，返回外接框 (x1, y1, x2, y2) 列表，截图内坐标。
-
-    微信角标是 #FA5151 左右的红底白字小圆，直径约 16px。先按行分段再按列分段，近似“连通块”；
-    小于 8px 的丢掉，过滤头像里零星的红色像素。
-    """
-    a = np.asarray(im.crop((0, 0, min(LEFT_W, im.width), im.height)))
-    m = (a[..., 0] > 220) & (a[..., 1] < 110) & (a[..., 2] < 110)
-    blobs = []
-    for ys in _runs(np.where(m.any(1))[0]):
-        sub = m[ys[0]:ys[-1] + 1]
-        for xs in _runs(np.where(sub.any(0))[0]):
-            # 同一行带里可能有好几个红点，高度要各算各的
-            inner = np.where(sub[:, xs[0]:xs[-1] + 1].any(1))[0]
-            y1, y2 = ys[0] + inner[0], ys[0] + inner[-1] + 1
-            if len(xs) >= 8 and y2 - y1 >= 8:
-                blobs.append((int(xs[0]), int(y1), int(xs[-1]) + 1, int(y2)))
-    return blobs
-
-
 def _sig(im, box):
     # 角标里的数字变了，像素就变了；用哈希比较，不保存图
     return hashlib.md5(im.crop(box).tobytes()).hexdigest()[:8]
@@ -221,7 +136,7 @@ class BadgeReader:
         self._layout, self._fh = None, None
 
     def read(self, im: Image.Image) -> dict:
-        blobs = red_blobs(im)
+        blobs = find_red_dots(im, LEFT_W)
         nav = [b for b in blobs if b[0] < NAV_W]
         rows = [b for b in blobs if b[0] >= NAV_W]
         layout = tuple(b[1] // 4 for b in rows)
@@ -297,14 +212,15 @@ def find_wechat():
 
 def calibrate(hwnd):
     shot = screenshot(window_rect(hwnd))
-    pw, ok = print_window(hwnd)
+    cap = capture_window(hwnd)
+    pw, ok = (cap.image if cap else None), cap is not None
     print(f'窗口大小 {shot.image.size}，前台：{pid_of(u32.GetForegroundWindow()) == pid_of(hwnd)}')
     for name, im in (('截屏', shot.image), ('后台截图', pw)):
         if im is None:
             print(f'[{name}] 没截到')
             continue
         mean = float(np.asarray(im).mean())
-        blobs = red_blobs(im)
+        blobs = find_red_dots(im, LEFT_W)
         r = BadgeReader().read(im)
         print(f'[{name}] 平均亮度 {mean:.0f}（接近 0 说明是黑图）')
         print(f'  红点 {len(blobs)} 个：{blobs}')
@@ -326,7 +242,8 @@ def watch(hwnd, state, seconds, events) -> tuple[list, dict]:
 
     def snap():
         shot = screenshot(window_rect(hwnd)).image
-        pw, _ = print_window(hwnd)
+        cap = capture_window(hwnd)
+        pw = cap.image if cap else None
         return {'title': title_of(hwnd), 'screen': readers['screen'].read(shot),
                 'printwin': readers['printwin'].read(pw) if pw else {'nav': None, 'fh': None}}
 

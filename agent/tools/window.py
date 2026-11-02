@@ -9,7 +9,9 @@ import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
-from .screen import screen_changed, screenshot
+from PIL import Image
+
+from .screen import Shot, screen_changed, screenshot
 
 user32 = ctypes.windll.user32
 dwmapi = ctypes.windll.dwmapi
@@ -158,3 +160,68 @@ def check_responsive(hwnd: int, hover_points: list[tuple[int, int]] | None = Non
     if screen_changed(before, after, threshold=8):  # 悬停高亮颜色很浅，阈值要比判断“界面变化”低
         return True, '悬停测试通过：鼠标移动后界面有变化'
     return False, '悬停测试失败：鼠标移动后界面没有任何变化，窗口可能不响应输入'
+
+
+# 用独立的 WinDLL 对象：下面要设 argtypes，和上面共用的 ctypes.windll 分开，互不影响
+_u32 = ctypes.WinDLL('user32')
+_gdi = ctypes.WinDLL('gdi32')
+# 64 位下句柄是 8 字节，不写清类型会被截成 4 字节，出现莫名其妙的失败
+_u32.GetWindowDC.argtypes = [wintypes.HWND]
+_u32.GetWindowDC.restype = ctypes.c_void_p
+_u32.ReleaseDC.argtypes = [wintypes.HWND, ctypes.c_void_p]
+_u32.PrintWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, wintypes.UINT]
+_u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+_gdi.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+_gdi.CreateCompatibleDC.restype = ctypes.c_void_p
+_gdi.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+_gdi.CreateCompatibleBitmap.restype = ctypes.c_void_p
+_gdi.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_gdi.SelectObject.restype = ctypes.c_void_p
+_gdi.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT, wintypes.UINT,
+                           ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
+_gdi.DeleteObject.argtypes = [ctypes.c_void_p]
+_gdi.DeleteDC.argtypes = [ctypes.c_void_p]
+
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [('biSize', wintypes.DWORD), ('biWidth', wintypes.LONG), ('biHeight', wintypes.LONG),
+                ('biPlanes', wintypes.WORD), ('biBitCount', wintypes.WORD), ('biCompression', wintypes.DWORD),
+                ('biSizeImage', wintypes.DWORD), ('biXPelsPerMeter', wintypes.LONG),
+                ('biYPelsPerMeter', wintypes.LONG), ('biClrUsed', wintypes.DWORD), ('biClrImportant', wintypes.DWORD)]
+
+
+def capture_window(hwnd: int) -> Shot | None:
+    """让窗口自己交一张画面（PrintWindow），窗口被别的窗口挡住也能拿到。
+
+    输入：hwnd 窗口句柄
+    输出：Shot，范围和 screenshot(window_rect(hwnd)) 一样；窗口最小化、隐藏或截图失败时返回 None
+    和 screenshot() 的区别：screenshot 截的是屏幕上看得见的像素，窗口被挡住就截到挡住它的东西。
+    PW_RENDERFULLCONTENT=2：GPU 画的窗口（Qt、Chrome）不加这个标志，截出来通常是黑的。
+    """
+    h = wintypes.HWND(hwnd)
+    if not user32.IsWindowVisible(h) or user32.IsIconic(h):
+        return None
+    wr = wintypes.RECT()
+    _u32.GetWindowRect(h, ctypes.byref(wr))
+    w, h_px = wr.right - wr.left, wr.bottom - wr.top
+    hdc = _u32.GetWindowDC(h)
+    mdc = _gdi.CreateCompatibleDC(hdc)
+    bmp = _gdi.CreateCompatibleBitmap(hdc, w, h_px)
+    old = _gdi.SelectObject(mdc, bmp)
+    try:
+        ok = _u32.PrintWindow(h, mdc, 2)
+        bmi = _BITMAPINFOHEADER(biSize=ctypes.sizeof(_BITMAPINFOHEADER), biWidth=w, biHeight=-h_px,  # 负数=从上往下
+                                biPlanes=1, biBitCount=32, biCompression=0)
+        buf = ctypes.create_string_buffer(w * h_px * 4)
+        _gdi.GetDIBits(mdc, bmp, 0, h_px, buf, ctypes.byref(bmi), 0)
+    finally:
+        _gdi.SelectObject(mdc, old)
+        _gdi.DeleteObject(bmp)
+        _gdi.DeleteDC(mdc)
+        _u32.ReleaseDC(h, hdc)
+    if not ok:
+        return None
+    im = Image.frombuffer('RGB', (w, h_px), buf, 'raw', 'BGRX', 0, 1)
+    # GetWindowRect 含看不见的拖拽边框，裁成和 window_rect 一样的范围
+    l, t, r, b = window_rect(hwnd)
+    return Shot(im.crop((l - wr.left, t - wr.top, r - wr.left, b - wr.top)), l, t)

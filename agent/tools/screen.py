@@ -1,6 +1,7 @@
 """截图。"""
 from dataclasses import dataclass
 
+import numpy as np
 from PIL import Image, ImageChops, ImageGrab
 
 
@@ -49,3 +50,35 @@ def screen_changed(a: Image.Image, b: Image.Image, threshold: int = 30) -> bool:
         return True
     diff = ImageChops.difference(a.convert('L'), b.convert('L'))
     return diff.point(lambda v: 255 if v > threshold else 0).getbbox() is not None
+
+
+def _runs(idx, gap: int = 2) -> list[list[int]]:
+    # 把排好序的下标分成连续的几段，例如 [3,4,5,9,10] → [[3,4,5],[9,10]]
+    out = []
+    for i in idx:
+        if out and i - out[-1][-1] <= gap:
+            out[-1].append(i)
+        else:
+            out.append([i])
+    return out
+
+
+def find_red_dots(image: Image.Image, x_max: int | None = None, min_size: int = 8) -> list[tuple[int, int, int, int]]:
+    """找图里的红色小圆点（未读角标），从上到下返回外接框 (x1, y1, x2, y2)，截图内坐标。
+
+    输入：x_max 只看图片左边这么宽的一块，None 表示整张图；min_size 比它小的红色碎点丢掉，过滤头像里零星的红色
+    注意：只认颜色，不认数字；头像或图片里成块的红色也会被当成红点，所以要限定范围，并且只看“变没变”。
+    """
+    box = (0, 0, min(x_max, image.width) if x_max else image.width, image.height)
+    a = np.asarray(image.convert('RGB').crop(box))
+    red = (a[..., 0] > 220) & (a[..., 1] < 110) & (a[..., 2] < 110)  # 微信角标是 #FA5151 左右
+    dots = []
+    for ys in _runs(np.where(red.any(1))[0]):
+        band = red[ys[0]:ys[-1] + 1]
+        for xs in _runs(np.where(band.any(0))[0]):
+            # 同一行带里可能有好几个红点，高度要各算各的
+            inner = np.where(band[:, xs[0]:xs[-1] + 1].any(1))[0]
+            y1, y2 = ys[0] + inner[0], ys[0] + inner[-1] + 1
+            if len(xs) >= min_size and y2 - y1 >= min_size:
+                dots.append((int(xs[0]), int(y1), int(xs[-1]) + 1, int(y2)))
+    return sorted(dots, key=lambda d: d[1])

@@ -8,3 +8,6 @@ experiments/wechat-vision/*
 
 # 出图工具的依赖，体积大，可以重新安装
 .tools/mermaid/node_modules/
+
+# 测试好友名单，含真实备注
+*.local.json
