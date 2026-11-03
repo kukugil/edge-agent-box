@@ -21,6 +21,20 @@
             "request": "launch",
             "module": "agent.practice.ex01_notepad_ocr",
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "练习3",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "agent.practice.ex03_wait_window",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "练习4",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "agent.practice.ex04_state_dict",
+            "cwd": "${workspaceFolder}"
         }
     ]
 }
