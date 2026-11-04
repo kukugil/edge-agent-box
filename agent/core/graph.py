@@ -18,7 +18,7 @@ from langgraph.graph import StateGraph, START, END
 
 from agent.core.check import count_msg, verify_sent
 from agent.core.state import AgentState
-from agent.tools import capture_window, find_windows, ocr, window_rect
+from agent.tools import capture_window, find_windows, ocr, window_rect,screen_changed
 
 MAX_STEPS = 5      # 最多走几步
 MAX_FAILURES = 3   # 最多失败几次
@@ -55,8 +55,8 @@ def think(state: AgentState) -> dict:
     输出：{'action': 动作字典}，比如 {'type': 'click', 'target': '搜索框'}。
     """
     print("想")
-    return {'action': {'type': 'click', 'target': '搜索框'}}
-
+    # return {'action': {'type': 'click', 'target': '搜索框'}}
+    return {'action':{'type': 'key', 'key': 'enter'}}
 
 def locate(state: AgentState) -> dict:
     """定位：把动作里的 target 变成截图里的坐标。以后这里叫 UI-TARS。
@@ -91,7 +91,7 @@ def act(state: AgentState) -> dict:
 def check(state: AgentState) -> dict:
     """核对：重新截一张图，程序独立判断发对没有，不信模型说的“完成”。
 
-    输出：passed 和 failures 两个键。
+    输出：done 和 failures 两个键。
     提示：
       - 一定要重新截图：state['picture'] 是「做」之前截的，看不到刚发的消息
       - 判断直接用 check.py 里的 verify_sent，它要三样东西：识别结果、task、count_before
@@ -102,12 +102,22 @@ def check(state: AgentState) -> dict:
     if shot is None:
         sys.exit('截图失败')
     items = ocr(shot.image)
-    alert = verify_sent(items,state['task'],state['count_before'])
-    print(alert[1])
-    if not alert[0]:
-        failures = state['failures'] + 1
-    return {'passed':alert[0],'failures':failures}
-
+    failures = state['failures']
+    done = state['done']
+    step_ok = state['step_ok']
+    if state['action']['type'] == 'key' and state['action'].get('key') == 'enter':
+        alert = verify_sent(items,state['task'],state['count_before'])
+        print(alert[1])
+        done = alert[0]
+        step_ok = done
+        if not alert[0]:
+            failures += 1      
+    else:
+        step_ok = screen_changed(state['picture'],shot.image)
+        if not step_ok:
+            failures += 1
+    return {'done':done,'failures':failures,'step_ok':step_ok}
+            
 # ---------- 条件边：只选路，不改 state ----------
 
 def after_rules(state: AgentState) -> str:
@@ -119,7 +129,7 @@ def after_rules(state: AgentState) -> str:
 
 def after_check(state: AgentState) -> str:
     """核对之后走哪条路：通过、或步数/失败到上限就停，否则回到「看」重来。"""
-    if state['passed'] or state['step_count'] >= MAX_STEPS or state['failures'] >= MAX_FAILURES:
+    if state['done'] or state['step_count'] >= MAX_STEPS or state['failures'] >= MAX_FAILURES:
         return END
     return 'look'
 
@@ -150,7 +160,7 @@ def build_graph():
 def new_state(task: dict, hwnd: int) -> AgentState:
     """开头的状态：11 个键都要有值，节点读不到键会报 KeyError。"""
     return {'task': task, 'steps': [], 'step_count': 0, 'failures': 0,
-            'picture': None, 'action': {}, 'location': [], 'allow': False, 'passed': False,
+            'picture': None, 'action': {}, 'location': [], 'allow': False, 'done': False,'step_ok': False,
             'hwnd': hwnd, 'count_before': 0}
 
 
@@ -172,7 +182,7 @@ def main():
     graph = build_graph()
     # 每走一个节点算一次，绕圈多了会超过默认上限 25 报错，所以调大一点
     end = graph.invoke(new_state(task, find_wechat()), {'recursion_limit': 50})
-    print(f"\n结束：{'通过' if end['passed'] else '没通过'}，走了 {end['step_count']} 步，失败 {end['failures']} 次"
+    print(f"\n结束：{'通过' if end['done'] else '没通过'}，走了 {end['step_count']} 步，失败 {end['failures']} 次"
           f"{'，被规矩拦下' if not end['allow'] else ''}")
 
 
