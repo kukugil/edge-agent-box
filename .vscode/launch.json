@@ -35,6 +35,13 @@
             "request": "launch",
             "module": "agent.practice.ex04_state_dict",
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "核对",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "agent.core.check",
+            "cwd": "${workspaceFolder}"
         }
     ]
 }

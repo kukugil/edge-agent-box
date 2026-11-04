@@ -63,7 +63,6 @@ def should_stop(state: AgentState) -> bool:
     """
     return state['step_count'] >= MAX_STEPS or state['failures'] >= MAX_FAILURES
 
-
 def check(start: AgentState, end: AgentState, update: dict) -> None:
     """核对练习结果。已写好。"""
     if set(update) != {'steps', 'step_count', 'failures'}:

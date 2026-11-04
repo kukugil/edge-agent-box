@@ -8,6 +8,8 @@ class AgentState(TypedDict):
     failures: int      # 失败几次
     picture: object    # 截图
     action: dict       # 下一步的动作
-    location: list      # 截图坐标
+    location: list     # 截图坐标
     allow:  bool       # 步骤是否允许
     passed: bool       # 程序是否通过
+    hwnd:  int         # 窗口句柄
+    count_before: int  # 窗口同一条消息计数
