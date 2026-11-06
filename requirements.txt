@@ -1,0 +1,6 @@
+# Windows 10/11，Python 3.12。安装：python -m pip install -r requirements.txt
+langgraph>=1.2            # 主循环的图（agent/core/graph.py）
+rapidocr-onnxruntime>=1.4 # 本机 OCR，CPU 就能跑，会带上 onnxruntime 和 opencv
+uiautomation>=2.0         # 读网页/窗口的控件树（agent/tools/web.py）
+Pillow>=10                # 截图和图片处理
+numpy>=1.26
