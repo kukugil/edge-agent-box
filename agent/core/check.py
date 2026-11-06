@@ -21,7 +21,7 @@ LIST_RIGHT = 255     # 左边会话列表的右边界：x 小于它的都是列�
 TITLE_TOP = 30       # 窗口标题栏的下沿
 TITLE_BOTTOM = 85    # 会话标题的下沿：标题文字整个在这一条里
 CHAT_TOP = 80        # 聊天区（消息气泡）的上沿
-CHAT_BOTTOM = 710    # 聊天区的下沿，再往下是输入框
+CHAT_BOTTOM = 645    # 聊天区的下沿，再往下是工具栏和输入框（11/4 按 960×800 的窗口重量，原来 710 把输入框也算进去了）
 
 
 def chat_title(items: list[dict]) -> str:

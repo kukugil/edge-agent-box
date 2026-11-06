@@ -11,3 +11,6 @@ experiments/wechat-vision/*
 
 # 测试好友名单，含真实备注
 *.local.json
+
+# 给 agent 用的独立 Chrome 配置（含邮箱登录信息）
+.chrome-agent/

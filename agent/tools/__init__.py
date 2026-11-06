@@ -26,4 +26,4 @@ from .ocr import ocr, find_text, center, norm
 from .models import load_config, chat
 from .ground import ground, snap_to_text
 from .inputs import click, press, paste_text, scroll
-from .window import WindowInfo, find_windows, window_rect, activate, check_responsive, capture_window
+from .window import WindowInfo, find_windows, window_rect, set_window_size, activate, check_responsive, capture_window

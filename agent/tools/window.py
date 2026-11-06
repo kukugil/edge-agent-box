@@ -77,6 +77,32 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int]:
     return r.left, r.top, r.right, r.bottom
 
 
+def set_window_size(hwnd: int, width: int, height: int) -> tuple[bool, str]:
+    """把窗口看得见的部分设成 width × height（左上角不动）。返回 (成功没有, 原因)。
+
+    为什么要有它：核对用的坐标线（会话列表右边界、聊天区下沿……）是按固定窗口大小量的，
+    窗口一拉大缩小就对不上。开跑前先把窗口设回量的时候那个大小。
+    最大化的窗口改不了大小，先还原。
+    """
+    h = wintypes.HWND(hwnd)
+    if user32.IsZoomed(h):
+        user32.ShowWindow(h, SW_RESTORE)
+        time.sleep(0.3)
+    outer = wintypes.RECT()
+    user32.GetWindowRect(h, ctypes.byref(outer))
+    l, t, r, b = window_rect(hwnd)
+    # GetWindowRect 含看不见的拖拽边框，SetWindowPos 按它算，所以要把边框补上
+    extra_w = (outer.right - outer.left) - (r - l)
+    extra_h = (outer.bottom - outer.top) - (b - t)
+    SWP_NOMOVE, SWP_NOZORDER = 0x0002, 0x0004
+    user32.SetWindowPos(h, None, 0, 0, width + extra_w, height + extra_h, SWP_NOMOVE | SWP_NOZORDER)
+    time.sleep(0.5)
+    l, t, r, b = window_rect(hwnd)
+    if abs((r - l) - width) > 2 or abs((b - t) - height) > 2:
+        return False, f'设成了 {r - l}×{b - t}，不是 {width}×{height}（可能被屏幕或窗口最小尺寸限制）'
+    return True, f'窗口已设为 {width}×{height}'
+
+
 def _foreground_is(hwnd: int) -> bool:
     # 同一进程的弹出窗口（下拉框、菜单）在前台也算，不然一激活就把下拉框关掉了
     fg = user32.GetForegroundWindow()
