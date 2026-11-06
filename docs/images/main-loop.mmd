@@ -1,0 +1,25 @@
+flowchart LR
+    S["准备窗口<br/>find_wechat"]
+    L["看<br/>look"]
+    T["想<br/>think"]
+    G["定位<br/>locate"]
+    R{"规矩<br/>rules"}
+    A["做<br/>act"]
+    C{"核对<br/>check"}
+    E(["结束<br/>END"])
+    S --> L --> T --> G --> R
+    R -- 放行 --> A
+    R -- 不在白名单 --> E
+    A --> C
+    C -- 没通过 --> L
+    C -- 通过 / 到上限 --> E
+    classDef prep fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+    classDef look fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+    classDef act fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
+    classDef check fill:#EEEDFE,stroke:#534AB7,color:#26215C
+    classDef stop fill:#FCEBEB,stroke:#A32D2D,color:#501313
+    class S prep
+    class L,T,G look
+    class R,C check
+    class A act
+    class E stop
