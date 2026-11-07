@@ -14,3 +14,14 @@ experiments/wechat-vision/*
 
 # 给 agent 用的独立 Chrome 配置（含邮箱登录信息）
 .chrome-agent/
+
+# 个人笔记和计划书只留在本机，不上传（11/6 定）
+learning/
+docs/学习笔记/
+docs/端侧电商客服-交接笔记.md
+docs/端侧电商客服-实施方案-v1.md
+docs/飞书计划书-流程图-交接给Codex.md
+docs/端侧AI操作盒子-计划书-*.md
+
+# 跑验收的日志
+mail_run*.log

@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
 ![LangGraph](https://img.shields.io/badge/LangGraph-1.2-1C3C3C)
-![Status](https://img.shields.io/badge/status-MVP%20acceptance-orange)
+![Status](https://img.shields.io/badge/status-MVP%20passed-brightgreen)
 
 [项目简介](#项目简介) · [工作原理](#工作原理) · [快速开始](#快速开始) · [验收结果](#验收结果) · [路线图](#路线图) · [文档](#文档)
 
@@ -112,12 +112,12 @@ python -m agent.core.graph 测试好友A "测试 1"
 
 ## 验收结果
 
-MVP 验收（2026-11-04）：
+MVP 验收（微信 2026-11-04，邮件 2026-11-06）：
 
 | 场景 | 通过线 | 结果 |
 |---|---|---|
 | 微信：回复指定会话 10 轮 | ≥ 8 轮成功，误发 = 0 | ✅ 程序判定 8/10，实际发出 10/10，误发 0 |
-| QQ 邮箱：回复 10 封测试邮件 | ≥ 9 封成功，收件人错误 = 0 | ⏳ 进行中 |
+| QQ 邮箱：回复 10 封测试邮件 | ≥ 9 封成功，收件人错误 = 0 | ✅ 10/10，收件人错误 0 |
 
 完整记录、调试中修过的问题和已知局限见 [D8 验收记录](docs/D8-acceptance.md)。
 
@@ -138,7 +138,7 @@ MVP 验收（2026-11-04）：
 - [x] 可行性实验，手写版主循环
 - [x] 工具层：截图、OCR、定位、键鼠、窗口、读控件树
 - [x] LangGraph 主循环，微信 10 轮验收
-- [ ] 感知分流接入 QQ 邮箱，完成 MVP 验收
+- [x] 感知分流接入 QQ 邮箱，完成 MVP 验收
 - [ ] 新消息触发和会话排队
 - [ ] 应用配置文件，异常恢复（弹窗、窗口被挡、中途来新消息）
 - [ ] 联系人记忆和回复生成，不会答的转人工
@@ -147,7 +147,6 @@ MVP 验收（2026-11-04）：
 - [ ] 一句话任务入口
 - [ ] 一键评测，长时间稳定运行
 
-日程和每一步的通过线见[计划书](docs/端侧AI操作盒子-计划书-v7.md)。
 
 ## 项目结构
 
@@ -159,9 +158,8 @@ edge-agent-box/
 │   ├── demos/           各工具的演示、手写版基线、测试数据脚本
 │   ├── practice/        学习练习
 │   └── config.json      模型服务地址
-├── docs/                计划书、验收记录、交接笔记、学习笔记
+├── docs/                验收记录、主循环图
 ├── experiments/         早期可行性实验脚本
-├── learning/            学习记录（与项目代码无关）
 ├── AGENTS.md            AI 编程助手的协作规则
 └── requirements.txt
 ```
@@ -170,10 +168,7 @@ edge-agent-box/
 
 | 文档 | 内容 |
 |---|---|
-| [计划书 v7](docs/端侧AI操作盒子-计划书-v7.md) | 目标、功能模块、日程和验收标准 |
 | [D8 验收记录](docs/D8-acceptance.md) | MVP 验收结果和已知局限 |
-| [交接笔记](docs/端侧电商客服-交接笔记.md) | 实验记录、模型服务状态、待办事项 |
-| [学习笔记](docs/学习笔记/) | 各模块的讲解 |
 | [AGENTS.md](AGENTS.md) | 分工、代码约定和安全硬规则 |
 
 ## 致谢
