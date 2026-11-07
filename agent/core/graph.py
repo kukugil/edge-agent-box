@@ -183,7 +183,6 @@ def rules(state: AgentState) -> dict:
     def block(why):                                   # 拦下：不许做，记原因
         print(f'  拦下：{why}')
         return {'allow': False, 'block_reason': why}
-
     # 1. 收件人不在白名单：条件边会直接结束
     if task['to'] not in WHITELIST:
         return block('收件人不在白名单')
@@ -326,8 +325,7 @@ def check(state: AgentState) -> dict:
 # ---------- 条件边：只选路，不改 state ----------
 
 def after_rules(state: AgentState) -> str:
-    """规矩之后走哪条路：不在白名单就停；其他情况都去「做」，被拦的一步由「做」记下原因、不动键鼠。"""
-    if state['task']['to'] not in WHITELIST:
+    if not state['allow'] and state['block_reason'] == '收件人不在白名单':
         return END
     return 'act'
 
@@ -341,15 +339,17 @@ def after_check(state: AgentState) -> str:
 
 # ---------- 把节点和边连成图 ----------
 
-def build_graph():
-    """把 6 个节点和 2 个条件边连起来，交回编译好的图。"""
+def build_graph(nodes=None):
+    """把 6 个节点和 2 个条件边连起来，交回编译好的图。nodes 不传就用微信的节点。"""
+    nodes = nodes or {'look': look, 'think': think, 'locate': locate,
+                      'rules': rules, 'act': act, 'check': check}
     g = StateGraph(AgentState)
-    g.add_node('look', look)
-    g.add_node('think', think)
-    g.add_node('locate', locate)
-    g.add_node('rules', rules)
-    g.add_node('act', act)
-    g.add_node('check', check)
+    g.add_node('look', nodes['look'])
+    g.add_node('think', nodes['think'])
+    g.add_node('locate', nodes['locate'])
+    g.add_node('rules', nodes['rules'])
+    g.add_node('act', nodes['act'])
+    g.add_node('check', nodes['check'])
     g.add_edge(START, 'look')
     g.add_edge('look', 'think')
     g.add_edge('think', 'locate')

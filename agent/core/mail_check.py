@@ -66,8 +66,6 @@ def count_subject(items: list[dict], subject: str) -> int:
             mails.append(it)
     return len(mails)
            
-
-
 def verify_replied(items: list[dict], subject: str, count_before: int) -> tuple[bool, str]:
     """核对回复有没有真的发出去：「已发送」里标题是 subject 的邮件，比发之前多。
 
@@ -76,14 +74,10 @@ def verify_replied(items: list[dict], subject: str, count_before: int) -> tuple[
     为什么要和发之前比：同一封邮件以前回复过一次，「已发送」里本来就有一封同样的标题。
     """
     # TODO
-    count = 0
-    for it in items:
-        if (it['kind'] == 'TextControl' and it['box'][0] > NAV_RIGHT 
-        and it['box'][1] > LIST_TOP and norm(it['text']) == norm(subject)):
-            count +=1
-    if count > count_subject(items, subject):
-        return (True,"f'发前 {count_before} 封，现在 {n} 封'")   
-    return (False,"f'发前 {count_before} 封，现在 {n} 封'")
+    now = count_subject(items, subject)
+    if now > count_before:
+        return (True,f'发前 {count_before} 封，现在 {now} 封')   
+    return (False,f'发前 {count_before} 封，现在 {now} 封')
 
 
 # ---------- 下面已经写好 ----------
