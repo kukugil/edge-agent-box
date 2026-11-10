@@ -187,7 +187,8 @@ def rules(state: AgentState) -> dict:
     if task['to'] not in ALLOWED:
         return block('收件人不在白名单')
     # 动作是type，但字段不对
-    if kind == 'type' and norm(a.get('text')) != norm(task['msg']):
+    # 逐字比（第 19 条）：norm 会删标点，"测试!"打成"测试?"也会放行
+    if kind == 'type' and a.get('text') != task['msg']:
         return block(f'正文只能写：{task["msg"]}')
     # 动作是 key
     if kind == 'key':
@@ -201,6 +202,10 @@ def rules(state: AgentState) -> dict:
         want = norm(qs[-1]) if qs else norm(a.get('target',''))
         if any(w in want for w in ('删除','关闭','退出','举报','拒收')):
             return block('动作是click，但是target里面有危险的词')
+        # 第 8 条：点开原邮件只认标题完全一致的。包含匹配会把"测试邮件1"认到"测试邮件10"，也会点进"回复：测试邮件 1"
+        hit = state.get('hit', '')
+        if task['subject'] in hit and hit != task['subject']:
+            return block(f'实际点到的是「{hit}」，不是标题正好为“{task["subject"]}”的邮件')
         kind_send = send_kind(state)
         if kind_send == 'bad':
             return block(f'实际点到的是「{state.get("hit", "")}」，不是发送按钮；要发送就点顶部写着“发送”的按钮')
@@ -209,11 +214,14 @@ def rules(state: AgentState) -> dict:
             # 点击发送，但是收件人不对
             if not ok:
                 return block(why)
-            # 点击发送，但是正文里没有那句话
-            m = norm(task['msg'])
+            # 第 8 条：发之前再核对一次回的是哪封。主题栏是回复时自动带的，正好是"回复：原标题"才对
+            subj = [it['value'] for it in items if it['kind'] == 'EditControl' and it['text'] == '主题']
+            if subj != ['回复：' + task['subject']]:
+                return block(f'主题栏不是“回复：{task["subject"]}”，可能回错了邮件')
+            # 第 21 条：正文（不算引用区）必须逐字等于这句。只查"包含"时，夹带别的字也会放行
             # 只看正文框里自己写的部分：引用的原邮件里可能带着上次的“测试回复 k”，整页找会被骗过
-            if m not in norm(body_text(items)):
-                return block('正文里还没有要发的那句话，先点正文再 type')
+            if body_text(items) != task['msg']:
+                return block('正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type')
     return {'allow': True, 'block_reason': ''}
 
 def check(state: AgentState) -> dict:

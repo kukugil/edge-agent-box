@@ -21,7 +21,7 @@ from agent.tools import norm
 NAV_RIGHT = 220        # 左边文件夹栏的右边界：x 小于它的是“收件箱”“已发送”这些文件夹名
 TO_ROW = (195, 240)    # 写信页“收件人”那一行的上下沿（截图内 y）
 LIST_TOP = 190         # 邮件列表从这里往下（上面是工具栏）
-SKIP = ('收件人', '抄送', '密送', '分别发送')   # 收件人那一行里不是收件人的字
+SKIP = ('收件人', '抄送', '密送', '分别发送', '抄送人', '密送人')   # 收件人到主题之间不是人的字（后两个是猜的，真机待核）
 
 
 def recipients_ok(items: list[dict], allowed: str) -> tuple[bool, str]:
@@ -35,11 +35,16 @@ def recipients_ok(items: list[dict], allowed: str) -> tuple[bool, str]:
       一个都没有、多于一个、文字对不上，都不通过。
     提示：@ 前面那段是 allowed.split('@')[0]。
     """
-    # TODO
+    # D12（反例清单第 6 条）：不只看收件人那一行。加了抄送、密送后会多出几行，主题栏被挤下去，
+    # 所以从收件人行顶上一直查到主题栏顶上，这中间出现的每个人都算收件人
+    subj = [it['box'][1] for it in items if it['kind'] == 'EditControl' and it['text'] == '主题']
+    if not subj:
+        return (False, '找不到主题栏，读不清收件人')
+    bottom = min(subj)
     recipients = []
     for it in items:
         if (it['kind'] == 'TextControl' and it['text'] not in SKIP
-        and it['box'][0] > NAV_RIGHT and TO_ROW[0] <= it['box'][1] and it['box'][3] <= TO_ROW[1]):
+        and it['box'][0] > NAV_RIGHT and TO_ROW[0] <= it['box'][1] and it['box'][3] <= bottom):
             recipients.append(it)
     if not recipients:
         return (False,"没有收件人")
@@ -99,6 +104,14 @@ RECIPIENT_CASES = [
     ('多了一个收件人', _FORM + [_t('tester01', 336, 208, 419, 226), _t('tester02', 430, 208, 510, 226)], False),
     ('收件人是空的', _FORM, False),
     ('昵称只是开头一样', _FORM + [_t('tester011', 336, 208, 425, 226)], False),
+    # 第 6 条：加了抄送行，主题栏被挤到下面
+    ('抄送行里多了别人', [it for it in _FORM if it['text'] != '主题']
+     + [_t('tester01', 336, 208, 419, 226), _t('抄送', 244, 250, 286, 268), _t('tester02', 336, 250, 419, 268),
+        _t('主题', 335, 290, 1651, 334, 'EditControl', '回复：测试邮件 1')], False),
+    ('抄送行是空的', [it for it in _FORM if it['text'] != '主题']
+     + [_t('tester01', 336, 208, 419, 226), _t('抄送', 244, 250, 286, 268),
+        _t('主题', 335, 290, 1651, 334, 'EditControl', '回复：测试邮件 1')], True),
+    ('读不到主题栏', [it for it in _FORM if it['text'] != '主题'] + [_t('tester01', 336, 208, 419, 226)], False),
 ]
 
 _NAV = [_t('收件箱', 52, 203, 94, 221), _t('已发送', 52, 305, 94, 323)]

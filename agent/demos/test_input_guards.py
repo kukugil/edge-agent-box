@@ -24,6 +24,12 @@ class FakeDesk:
         self.events = 0                   # 原始键盘事件总数，单独按下 ctrl 也算：证明"一个键都没发"用它
 
     # --- 假 user32 ---
+    def SetCursorPos(self, x, y):         # 鼠标也算事件：证明"被拒绝时鼠标一下都没动"
+        self.events += 1
+
+    def mouse_event(self, *args):
+        self.events += 1
+
     def keybd_event(self, vk, scan, flags, extra):
         self.events += 1
         name = VK_NAME[vk]
@@ -134,6 +140,20 @@ def main():
     d = FakeDesk(box='张')
     run('append', d, lambda: inputs.paste_text('三', mode='append'))
     results.append(case("mode='append'：追加", d.box == '张三', repr(d.box)))
+
+    print('第 32、33 条：点关闭、最小化')
+    real_at, inputs._window_rect_at = inputs._window_rect_at, lambda x, y: (100, 50, 1060, 850)   # 假窗口 960×800
+    try:
+        for name, x, y, want in [('关闭（右上角）', 1045, 60, True), ('最小化（关闭左边 90px）', 955, 65, True),
+                                 ('最大化窗口的关闭（y 在窗口上沿外 8px 内）', 1050, 45, True),
+                                 ('标题栏左边，离按钮远', 300, 60, False), ('右上角往下 50px（聊天区顶上）', 1045, 100, False)]:
+            d = FakeDesk()
+            why = run(name, d, lambda: raises(lambda: inputs.click(x, y)))
+            got = bool(why)
+            results.append(case(f'click {name}：{"拒绝，鼠标没动" if want else "照常点"}', got == want and (d.events == 0) == want,
+                                f'why={why!r} events={d.events}'))
+    finally:
+        inputs._window_rect_at = real_at
 
     try:
         inputs.paste_text('x', mode='clear')

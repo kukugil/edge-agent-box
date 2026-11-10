@@ -22,7 +22,8 @@ from agent.core.check import LIST_RIGHT, chat_title, count_msg, verify_sent
 from agent.core.state import AgentState
 from agent.demos.baseline_loop import in_web_suggestions, parse_json  # 微信界面知识先借用，D11 挪进应用配置
 from agent.tools import (activate, capture_window, chat, check_responsive, click, find_windows, ground,
-                         find_text, load_config, norm, ocr, paste_text, press, screen_changed, set_window_size, snap_to_text, window_rect,InputRefused)
+                         find_text, load_config, norm, ocr, paste_text, press, screen_changed, set_window_size, snap_to_text, window_rect,InputRefused,
+                         read_focused_text)
 from agent.tools.models import image_url
 
 CFG = load_config()   # 模型地址，在 agent/config.json
@@ -190,7 +191,8 @@ def rules(state: AgentState) -> dict:
     if kind in ('type', 'key') and norm(chat_title(items)) != norm(task['to']):
         return block('当前会话不是目标会话，先在左侧会话列表点开目标')
     # 3. 打的字必须就是要发的那句，不许模型自己编
-    if kind == 'type' and norm(a.get('text', '')) != norm(task['msg']):
+    #    逐字比（第 19 条）：norm 会删标点，"测试!"打成"测试?"也会放行
+    if kind == 'type' and a.get('text', '') != task['msg']:
         return block(f'输入的文字必须正好是：{task["msg"]}')
     # 4. 只许按回车（esc 会把微信藏进托盘）
     if kind == 'key' and str(a.get('key', '')).lower() != 'enter':
@@ -232,6 +234,30 @@ def rules(state: AgentState) -> dict:
         if in_web_suggestions(items, loc):
             return block('点的是网络搜索建议，会打开网页，改点联系人那一项')
     return {'allow': True, 'block_reason': ''}       # 都过了，放行
+
+
+def send_permit(state: AgentState) -> tuple[bool, str]:
+    """发送许可：按回车前的最后一刻再查一遍，查过马上按，中间不做别的。
+
+    输入：state（用 hwnd、task）。输出：(许不许按回车, 不许时的原因)。
+    为什么在「做」里查、不在「规矩」里查：规矩用的是这一圈开头「看」的截图，从那时到按回车隔着模型思考的
+        几秒，列表可能重排、焦点可能被弹窗或搜索框抢走（反例清单第 4、25、26 条）。
+    两样都要过：
+      1. 重新截图，会话标题还是目标（第 4、26 条）
+      2. 用剪贴板读回"焦点所在的框"，必须逐字等于这句（第 19、20、22、25 条）。
+         焦点被抢走 → 读到别的或读不到；剪贴板被换掉 → 先放了记号，读到的不会是这句；框里多了字 → 不相等。
+         OCR 看到"输入框里有这句"不算数：工具栏、聊天区里出现同一句也会被数进去（第 20 条）。
+    """
+    task = state['task']
+    shot = capture_window(state['hwnd'])
+    if shot is None:
+        return False, '截不到微信画面'
+    if norm(chat_title(ocr(shot.image))) != norm(task['to']):
+        return False, '当前会话标题已经不是目标'
+    back = read_focused_text()
+    if back != task['msg']:
+        return False, '读不到输入框（焦点可能被抢走）' if back == '' else '输入框里不正好是这句'
+    return True, ''
 
 
 def act(state: AgentState) -> dict:
@@ -277,8 +303,12 @@ def act(state: AgentState) -> dict:
                     paste_text(a.get('text', ''), mode=mode)
                     result = '已输入'
                 else:                                # key：规矩只放行 enter
-                    press('enter')
-                    result = '已按回车'
+                    ok, why = send_permit(state)     # 最后一刻再查，查过马上按
+                    if ok:
+                        press('enter')
+                        result = '已按回车'
+                    else:
+                        result = '发送许可作废：' + why
             except InputRefused as e:
                 result = '被底层拒绝：' + str(e)
     print(f'  {result}')
@@ -308,7 +338,8 @@ def check(state: AgentState) -> dict:
     done = state['done']
     step_ok = state['step_ok']
     a = state['action']
-    if (a.get('type') == 'key' and a.get('key') == 'enter') or a.get('type') == 'done':   # 回车或模型说完成：程序复查
+    # 转小写：规矩放行大写 ENTER，这里只认小写的话会跳过核对（Codex 11/10）
+    if (a.get('type') == 'key' and str(a.get('key', '')).lower() == 'enter') or a.get('type') == 'done':   # 回车或模型说完成：程序复查
         # 只看一眼会误判（回车后那一瞬标题对不上），每秒看一次，最多 5 次
         for i in range(5):
             alert = verify_sent(items, state['task'], state['count_before'])
@@ -355,7 +386,8 @@ def after_check(state: AgentState) -> str:
     results = [s['result'] for s in state['steps']]
     if any(r in ('已按回车','已点发送') for r in results):
         return END
-    if results and results[-1].startswith(('被底层拒绝', '切前台失败')):
+    # 发送许可作废也停：框里的字和焦点都说不清了，再来一圈可能把字打进别的框，交给人
+    if results and results[-1].startswith(('被底层拒绝', '切前台失败', '发送许可作废')):
         return END
     return 'look'
 

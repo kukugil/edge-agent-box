@@ -13,6 +13,12 @@ g.window_rect = lambda h: (100, 200, 0, 0)
 g.click = lambda x, y: calls.append(('click', x, y))
 g.press = lambda k: calls.append(('press', k))
 g.paste_text = lambda t, mode='empty_only': calls.append(('paste', t, mode))
+# 发送许可用的假画面：标题、输入框读回按用例改 desk
+desk = {'title': '文件传输助手', 'box': '测试回复 1'}
+g.capture_window = lambda h: type('Shot', (), {'image': None})()
+g.ocr = lambda img: []
+g.chat_title = lambda items: desk['title']
+g.read_focused_text = lambda: desk['box']
 
 
 def st(action, allow=True, steps=None, **kw):
@@ -53,6 +59,18 @@ calls.clear(); r = g.act(st({'type': 'done'}))['steps'][-1]['result']
 ok(f'done 不动键鼠：记 "{r}"', r == '模型说完成了' and calls == [])
 calls.clear(); r = g.act(st({'type': 'key'}, allow=False))['steps'][-1]['result']
 ok(f'规矩拦下不动键鼠：记 "{r}"', r == '规矩拦了' and calls == [])
+
+# 发送许可（D12，第 4、19、20、22、25、26 条）：按回车前最后一刻再查标题和输入框
+for name, title, box in [('会话标题变了（列表重排、点到别的会话）', '测试好友B', '测试回复 1'),
+                         ('焦点被抢走，读不到输入框', '文件传输助手', ''),
+                         ('框里只差标点', '文件传输助手', '测试回复 1。'),
+                         ('框里多了别的字', '文件传输助手', '你好测试回复 1'),
+                         ('焦点在搜索框，读到的是搜索词', '文件传输助手', '文件传输')]:
+    desk.update(title=title, box=box)
+    calls.clear(); s = st({'type': 'key', 'key': 'enter'}); r = g.act(s)['steps'][-1]['result']
+    ok(f'{name} → 不按回车，记 "{r}"', calls == [] and r.startswith('发送许可作废'))
+desk.update(title='文件传输助手', box='测试回复 1')
+ok('发送许可作废 → 停', g.after_check(st({}, steps=[{'action': {}, 'result': '发送许可作废：x'}])) == END)
 
 def refuse(t, mode='empty_only'): raise InputRefused('输入框里已经有 2 个字符')
 g.paste_text = refuse

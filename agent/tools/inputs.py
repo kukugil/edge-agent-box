@@ -3,11 +3,13 @@
 D11 加了两道底层拦截（反例清单第 18、31 条），拦下时抛 InputRefused，键鼠一下都不动：
   - press 拒绝 Esc、Alt+F4
   - paste_text 默认先读输入框，里面有字就不粘
+D12 加了一道（第 32、33 条）：click 拒绝落在窗口右上角关闭、最大化、最小化那一块
 
 
 现在是电脑本机用 Win32 模拟输入；以后换成盒子的 USB 键鼠时，只要换掉这个文件里的实现，函数签名不变。
 """
 import ctypes
+import ctypes.wintypes
 import time
 
 import uiautomation as auto
@@ -50,8 +52,48 @@ _VK = {
 _EXTENDED = {0x26, 0x28, 0x25, 0x27, 0x24, 0x23, 0x21, 0x22, 0x2E}  # 方向键等要带“扩展键”标志
 
 
+# 窗口右上角的禁点区（反例清单第 32、33 条）：关闭、最大化、最小化都在这里。
+# 微信 4.x 和 Chrome 这三个按钮加起来约 140px 宽、30–40px 高（物理像素），多留一点余量。
+_CORNER_W, _CORNER_H = 200, 40
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long), ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
+
+
+def _window_rect_at(x: int, y: int):
+    """屏幕上 (x, y) 那一点所属的顶层窗口的 (左, 上, 右, 下)；拿不到交回 None。"""
+    hwnd = user32.WindowFromPoint(ctypes.wintypes.POINT(int(x), int(y)))
+    root = user32.GetAncestor(hwnd, 2) if hwnd else 0   # 2 = GA_ROOT：点在子控件上也要找到外面那层窗口
+    r = _RECT()
+    if not root or not user32.GetWindowRect(root, ctypes.byref(r)):
+        return None
+    return r.left, r.top, r.right, r.bottom
+
+
+def click_refused_reason(x: int, y: int) -> str:
+    """(x, y) 落在窗口右上角关闭/最大化/最小化那一块就交回原因，否则交回 ''。
+
+    为什么在底层拦：规矩只看模型的描述和截图坐标，模型说点"安全按钮"、坐标却落在关闭上时拦不住（第 29 条）。
+    这里按点击时屏幕上真正在那一点的窗口算，换了窗口位置也算得对。
+    """
+    rect = _window_rect_at(x, y)
+    if rect is None:
+        return ''
+    l, t, r, b = rect
+    if y - t < _CORNER_H and r - x < _CORNER_W:
+        return '点在窗口右上角关闭、最大化、最小化按钮那一块'
+    return ''
+
+
 def click(x: int, y: int, button: str = 'left', double: bool = False) -> None:
-    """在屏幕坐标 (x, y) 点一下。button 是 'left' 或 'right'；double=True 双击。"""
+    """在屏幕坐标 (x, y) 点一下。button 是 'left' 或 'right'；double=True 双击。
+
+    落在窗口右上角关闭、最大化、最小化那一块时抛 InputRefused，鼠标一下都不动。
+    """
+    why = click_refused_reason(x, y)
+    if why:
+        raise InputRefused(f'不许点 ({int(x)}, {int(y)})：{why}')
     down, up = _MOUSE[button]
     user32.SetCursorPos(int(x), int(y))
     time.sleep(0.05)

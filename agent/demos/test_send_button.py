@@ -93,6 +93,27 @@ ok('点「回复」放行', s['allow'])
 s.update(g.act(s))
 ok(f'  「做」记成 "{s["steps"][-1]["result"]}"，路口继续', s['steps'][-1]['result'] == '已点击' and g.after_check(s) == 'look')
 
+print('六、第 8 条：只认标题完全一致的原邮件，发前再核对主题')
+inbox = [_t('测试邮件 10', 494, 230, 560, 248), _t('回复：测试邮件 3', 494, 260, 600, 278), _t('测试邮件 3', 494, 290, 560, 308)]
+s = state('列表里标题为“测试邮件 3”的邮件', inbox)
+ok(f'有完全一致的那封 → 放行，点在它上面（{s["location"]}）', s['allow'] and s['location'][1] == 299)
+s = state('列表里标题为“测试邮件 3”的邮件', inbox[:2])
+ok(f'只有「回复：测试邮件 3」→ 拦（{s["block_reason"]}）', not s['allow'])
+s1 = {**g.new_state({'app': 'mail', 'to': ADDR, 'subject': '测试邮件 1', 'msg': '测试回复 1'}, 1),
+      'action': {'type': 'click', 'target': '列表里标题为“测试邮件 1”的邮件'}, 'items': inbox}
+s1.update(mn.locate(s1)); s1.update(mn.rules(s1))
+ok(f'找"测试邮件 1"、只有"测试邮件 10" → 拦（{s1["block_reason"]}）', not s1['allow'])
+wrong_subj = [dict(it, value='回复：测试邮件 30') if it['text'] == '主题' else it for it in page(GOOD_TO, True)]
+s = state('顶部写着“发送”的按钮', wrong_subj)
+ok(f'主题栏是"回复：测试邮件 30" → 不许发（{s["block_reason"]}）', not s['allow'])
+
+print('七、第 19、21 条：逐字比')
+s = g.new_state({'app': 'mail', 'to': ADDR, 'subject': '测试邮件 3', 'msg': '测试回复 3'}, 1)
+s.update(action={'type': 'type', 'text': '测试回复3'}, items=page(GOOD_TO, False))
+ok('打的字少个空格 → 拦', not mn.rules(s)['allow'])
+s = state('顶部写着“发送”的按钮', page(GOOD_TO, False) + [_t('额外文字', 340, 310, 400, 328), _t('测试回复 3', 400, 310, 480, 328)])
+ok(f'正文是"额外文字 + 这句" → 不许发', not s['allow'])
+
 g.build_graph(mn.NODES)
 ok('邮件整张图建得起来', True)
 print('全部通过' if bad == 0 else f'{bad} 条没通过')
