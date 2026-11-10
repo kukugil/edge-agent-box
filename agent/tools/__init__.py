@@ -6,7 +6,8 @@
       ocr.ocr             图里有哪些文字、各在哪
       ground.ground       一句话描述 → UI-TARS 给出点击坐标（内部补白边、换算坐标）
       ground.snap_to_text 用 OCR 把 UI-TARS 的点拉到文字中心（只在 60px 内）
-  做  inputs.click / press / paste_text / scroll
+  做  inputs.click / press / paste_text / read_focused_text / scroll
+      （press 拒绝 Esc；paste_text 默认输入框有字就不粘，拒绝时都抛 InputRefused）
   窗口 window.find_windows / activate / check_responsive
 
 坐标约定：截图、OCR、定位返回的都是“截图内坐标”（左上角是 0,0）；
@@ -25,5 +26,5 @@ from .screen import Shot, screenshot, pad_top, screen_changed, find_red_dots
 from .ocr import ocr, find_text, center, norm
 from .models import load_config, chat
 from .ground import ground, snap_to_text
-from .inputs import click, press, paste_text, scroll
+from .inputs import InputRefused, click, press, paste_text, read_focused_text, scroll
 from .window import WindowInfo, find_windows, window_rect, set_window_size, activate, check_responsive, capture_window

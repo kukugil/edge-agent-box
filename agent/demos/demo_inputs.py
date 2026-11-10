@@ -52,13 +52,13 @@ def main():
         time.sleep(0.2)
         results.append(check('click + paste_text', read_notepad(hwnd) == '第一段：你好，记事本', repr(read_notepad(hwnd))))
 
-        paste_text('第二段：覆盖掉第一段')  # clear=True：先全选再粘贴
+        paste_text('第二段：覆盖掉第一段', mode='replace')  # 先全选再粘贴
         time.sleep(0.2)
         results.append(check('paste_text 清空后粘贴', read_notepad(hwnd) == '第二段：覆盖掉第一段', repr(read_notepad(hwnd))))
 
-        paste_text('+追加', clear=False)
+        paste_text('+追加', mode='append')
         time.sleep(0.2)
-        results.append(check('paste_text(clear=False) 追加', read_notepad(hwnd) == '第二段：覆盖掉第一段+追加',
+        results.append(check("paste_text(mode='append') 追加", read_notepad(hwnd) == '第二段：覆盖掉第一段+追加',
                              repr(read_notepad(hwnd))))
 
         press('ctrl+a')

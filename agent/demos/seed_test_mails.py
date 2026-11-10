@@ -86,19 +86,19 @@ def send_one(hwnd, addr, k, dry):
     x1, y1, x2, y2 = label['box']
     tap(hwnd, {'box': [x2 + 150, y1, x2 + 250, y2]})
     time.sleep(0.5)
-    paste_text(addr, clear=False)
+    paste_text(addr, mode='append')
     press('enter')          # 回车把地址变成收件人小块
     time.sleep(0.5)
     _, items = wait_for(hwnd, lambda it: first(it, '主题', 'EditControl'))
     tap(hwnd, first(items, '主题', 'EditControl'))
     time.sleep(0.3)
-    paste_text(f'测试邮件 {k}', clear=False)
+    paste_text(f'测试邮件 {k}', mode='append')
     body = first(items, '输入正文')
     if not body:
         return False, '找不到正文框'
     tap(hwnd, body)
     time.sleep(0.3)
-    paste_text(f'这是第 {k} 封测试邮件，请回复。', clear=False)
+    paste_text(f'这是第 {k} 封测试邮件，请回复。', mode='append')
     time.sleep(0.8)
 
     # 发送前核对：收件人那一行只能有测试号自己

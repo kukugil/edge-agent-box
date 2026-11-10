@@ -22,7 +22,7 @@ from agent.core.check import LIST_RIGHT, chat_title, count_msg, verify_sent
 from agent.core.state import AgentState
 from agent.demos.baseline_loop import in_web_suggestions, parse_json  # 微信界面知识先借用，D11 挪进应用配置
 from agent.tools import (activate, capture_window, chat, check_responsive, click, find_windows, ground,
-                         find_text, load_config, norm, ocr, paste_text, press, screen_changed, set_window_size, snap_to_text, window_rect)
+                         find_text, load_config, norm, ocr, paste_text, press, screen_changed, set_window_size, snap_to_text, window_rect,InputRefused)
 from agent.tools.models import image_url
 
 CFG = load_config()   # 模型地址，在 agent/config.json
@@ -256,22 +256,29 @@ def act(state: AgentState) -> dict:
     if not state['allow']:                           # 1. 被拦：不动键鼠，只记原因
         result = state['block_reason']
     else:
-        activate(state['hwnd'])                      # 2. 微信放到前台
-        if kind == 'click':                          # 3. 按种类做
-            l, t, _, _ = window_rect(state['hwnd'])  #    截图坐标 + 窗口左上角 = 屏幕坐标
-            x, y = state['location']
-            click(int(l + x), int(t + y))
-            result = '已点击'
-        elif kind == 'type':
-            paste_text(a.get('text', ''))
-            result = '已输入'
-        elif kind == 'key':
-            press('enter')
-            result = '已按回车'
-        elif kind == 'done':
+        ok, why = activate(state['hwnd'])            # 2. 微信放到前台
+        if not ok:                                   #    切不到前台：一下键鼠都不动
+            result = '切前台失败：' + why
+        elif kind == 'done':                         #    这两种本来就不动键鼠
             result = '模型说完成了'
-        else:
+        elif kind == 'fail':
             result = '模型说做不了：' + str(a.get('reason', ''))
+        else:
+            try:                                     # 3. 按种类做；底层拒绝就记原因，不让主循环崩
+                if kind == 'click':
+                    l, t, _, _ = window_rect(state['hwnd'])
+                    x, y = state['location']
+                    click(int(l + x), int(t + y))
+                    result = '已点发送' if '发送' in a.get('target', '') else '已点击'
+                elif kind == 'type':
+                    mode = 'replace' if state['task'].get('app') == 'mail' else 'empty_only'
+                    paste_text(a.get('text', ''), mode=mode)
+                    result = '已输入'
+                else:                                # key：规矩只放行 enter
+                    press('enter')
+                    result = '已按回车'
+            except InputRefused as e:
+                result = '被底层拒绝：' + str(e)
     print(f'  {result}')
     time.sleep(1)                                    # 4. 等界面画完
     # 把这一步连同结果记下来，think 下一圈拼历史用
@@ -300,7 +307,7 @@ def check(state: AgentState) -> dict:
     step_ok = state['step_ok']
     a = state['action']
     if (a.get('type') == 'key' and a.get('key') == 'enter') or a.get('type') == 'done':   # 回车或模型说完成：程序复查
-        # 11/7 TIBO 说“你改吧”，Claude 改：只看一眼会误判（回车后那一瞬标题对不上），每秒看一次，最多 5 次
+        # 只看一眼会误判（回车后那一瞬标题对不上），每秒看一次，最多 5 次
         for i in range(5):
             alert = verify_sent(items, state['task'], state['count_before'])
             if alert[0] or i == 4:           # 最后一圈判完就停，不再白等 1 秒、白截一张
@@ -342,6 +349,11 @@ def after_rules(state: AgentState) -> str:
 def after_check(state: AgentState) -> str:
     """核对之后走哪条路：通过、或步数/失败到上限就停，否则回到「看」重来。"""
     if state['done'] or state['step_count'] >= MAX_STEPS or state['failures'] >= MAX_FAILURES:
+        return END
+    results = [s['result'] for s in state['steps']]
+    if any(r in ('已按回车','已点发送') for r in results):
+        return END
+    if results and results[-1].startswith(('被底层拒绝', '切前台失败')):
         return END
     return 'look'
 

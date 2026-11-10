@@ -195,10 +195,10 @@ def run_once(hwnd, k):
             # 往搜索框输入时，要求点击前后聊天标题没变；变了说明点偏打开了别的聊天，光标可能在别人的输入框里
             in_search = '搜索' in last_click_target and chat_title(items) == title_before_click
             if chat_title_is_target(items):
-                paste_text(text)
+                paste_text(text)  # 默认：框里有草稿就不粘，粘完读回核对
                 result = '已输入'
             elif in_search:
-                paste_text(text, clear=False)  # 不全选：万一光标其实在别人的输入框里，也不会覆盖草稿
+                paste_text(text, mode='append')  # 不全选：万一光标其实在别人的输入框里，也不会覆盖草稿
                 time.sleep(0.8)
                 _, check_items = grab(hwnd)
                 box_text = ''.join(it['text'] for it in check_items if it['box'][0] < 255 and it['box'][3] < 80)
