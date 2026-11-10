@@ -269,7 +269,9 @@ def act(state: AgentState) -> dict:
                     l, t, _, _ = window_rect(state['hwnd'])
                     x, y = state['location']
                     click(int(l + x), int(t + y))
-                    result = '已点发送' if '发送' in a.get('target', '') else '已点击'
+                    # 描述里写了发送，或实际点到的元素带发送，都算点过发送：多停一次不闯祸，少停一次可能重发
+                    sent = '发送' in a.get('target', '') or '发送' in state.get('hit', '')
+                    result = '已点发送' if sent else '已点击'
                 elif kind == 'type':
                     mode = 'replace' if state['task'].get('app') == 'mail' else 'empty_only'
                     paste_text(a.get('text', ''), mode=mode)
@@ -384,9 +386,9 @@ def build_graph(nodes=None):
 # ---------- 下面已经写好 ----------
 
 def new_state(task: dict, hwnd: int) -> AgentState:
-    """开头的状态：14 个键都要有值，节点读不到键会报 KeyError。"""
+    """开头的状态：15 个键都要有值，节点读不到键会报 KeyError。"""
     return {'task': task, 'steps': [], 'step_count': 0, 'failures': 0,
-            'picture': None, 'action': {}, 'location': [], 'allow': False, 'done': False,'step_ok': False,
+            'picture': None, 'action': {}, 'location': [], 'hit': '', 'allow': False, 'done': False,'step_ok': False,
             'hwnd': hwnd, 'count_before': 0, 'items': [], 'block_reason': ''}
 
 

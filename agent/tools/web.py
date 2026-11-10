@@ -101,10 +101,19 @@ def _quoted(target: str) -> list[str]:
 
 
 def locate_text(items: list[dict], target: str) -> tuple[list, str]:
+    """同 locate_element，只交回 (坐标, 说明)。"""
+    pt, _, note = locate_element(items, target)
+    return pt, note
+
+
+def locate_element(items: list[dict], target: str) -> tuple[list, dict | None, str]:
     """网页版的「定位」：不用 UI-TARS，直接按 target 里引号括起来的文字在控件树里找。
 
     输入：items  read_page() 的结果；target 模型写的“要点的元素”，例如 '列表里标题为“测试邮件 3”的邮件'
-    输出：([x, y] 截图内坐标, 说明)；找不到交回 ([], 原因)。
+    输出：([x, y] 截图内坐标, 实际点到的那个 item, 说明)；找不到交回 ([], None, 原因)。
+         点正文框时 item 是正文框那个 Group。
+    为什么要交回 item：规矩要按"实际点到的是什么"判断，不能按模型怎么描述
+        （11/10 Codex 发现 target 写“送”也能点到「发送」，绕过收件人核对）。
     规则：
       1. 先找文字和引号里完全相等的（norm 后比）；没有再找包含的。“测试邮件 1”不会匹配到“测试邮件 10”。
       2. 同样的字出现好几处时，优先页面主体（x > NAV_RIGHT），其次靠上的那个。
@@ -114,10 +123,11 @@ def locate_text(items: list[dict], target: str) -> tuple[list, str]:
     # 坑（11/6 验收）：模型常把引用原邮件里的字括进引号，按字找会点进引用区，打的字进不了正文
     body = _body_point(items) if '正文' in target else None
     if body:
-        return body, '按「输入正文」找到正文框'
+        box = next(it for it in items if it['text'] == '输入正文')
+        return body, box, '按「输入正文」找到正文框'
     qs = _quoted(target)
     if not qs:
-        return [], 'target 里没有用引号括起要点的文字'
+        return [], None, 'target 里没有用引号括起要点的文字'
     left = '左' in target
     for q in qs:
         for exact in (True, False):
@@ -128,8 +138,8 @@ def locate_text(items: list[dict], target: str) -> tuple[list, str]:
             side = [it for it in c if (it['box'][0] < NAV_RIGHT) == left] or c
             best = min(side, key=lambda it: it['box'][1])
             x, y = center(best['box'])
-            return [int(x), int(y)], f'按文字找到（{"相等" if exact else "包含"}，{len(c)} 处）'
-    return [], '页面上没有引号里的那段文字'
+            return [int(x), int(y)], best, f'按文字找到「{best["text"]}」（{"相等" if exact else "包含"}，{len(c)} 处）'
+    return [], None, '页面上没有引号里的那段文字'
 
 
 def _body_point(items: list[dict]):

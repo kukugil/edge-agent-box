@@ -9,6 +9,7 @@ class AgentState(TypedDict):
     picture: object    # 截图
     action: dict       # 下一步的动作
     location: list     # 截图坐标
+    hit: str           # 定位实际点到的元素文字（邮件用；微信暂不填）。认"发送"按它，不按模型写的 target
     allow:  bool       # 步骤是否允许
     step_ok: bool      # 这一步是否通过
     done:  bool        # 整个节点是否完成

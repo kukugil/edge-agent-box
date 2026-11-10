@@ -27,8 +27,7 @@ from agent.core.state import AgentState
 from agent.demos.baseline_loop import parse_json
 from agent.tools import activate, capture_window, chat, norm, screen_changed
 from agent.tools.models import image_url
-from agent.tools.web import body_text, find_mail_window, locate_text, open_folder, read_page
-from agent.tools.web import _quoted, body_text, find_mail_window, locate_text, open_folder, read_page
+from agent.tools.web import _quoted, body_text, find_mail_window, locate_element, open_folder, read_page
 
 CFG = graph.CFG
 CONTACTS = Path(__file__).resolve().parent.parent / 'test_contacts.local.json'
@@ -131,10 +130,32 @@ def locate(state: AgentState) -> dict:
     print('定位')
     a = state['action']
     if a.get('type') != 'click':
-        return {'location': []}
-    pt, note = locate_text(state['items'], a.get('target', ''))
+        return {'location': [], 'hit': ''}
+    pt, item, note = locate_element(state['items'], a.get('target', ''))
     print(f'  {note}')
-    return {'location': pt}
+    return {'location': pt, 'hit': item['text'] if item else ''}
+
+
+SEND = '发送'   # 回信页顶部发送按钮的文字，实测就是这两个字
+
+
+def send_kind(state: AgentState) -> str:
+    """这一步 click 算不算"点发送"，按实际点到的元素判断，不按模型写的 target。
+
+    输出：'send'  点到的正好是「发送」按钮 → 要过收件人和正文两关，点完就停
+          'bad'   点到的元素带"发送"但不是按钮（如「分别发送」），或 target 说发送却点到别的 → 拦
+          'none'  普通点击
+    坑（11/10 Codex）：target 写“送”时包含匹配照样点到「发送」，原来只看 target 就绕过了收件人核对。
+    """
+    a = state['action']
+    if a.get('type') != 'click':
+        return 'none'
+    hit = state.get('hit', '')
+    if hit == SEND:          # 逐字比：norm 会删空格标点，认按钮不需要它
+        return 'send'
+    if SEND in hit or SEND in a.get('target', ''):
+        return 'bad'
+    return 'none'
 
 
 def rules(state: AgentState) -> dict:
@@ -180,7 +201,10 @@ def rules(state: AgentState) -> dict:
         want = norm(qs[-1]) if qs else norm(a.get('target',''))
         if any(w in want for w in ('删除','关闭','退出','举报','拒收')):
             return block('动作是click，但是target里面有危险的词')
-        if '发送' in a.get('target',''):
+        kind_send = send_kind(state)
+        if kind_send == 'bad':
+            return block(f'实际点到的是「{state.get("hit", "")}」，不是发送按钮；要发送就点顶部写着“发送”的按钮')
+        if kind_send == 'send':
             ok,why = recipients_ok(items,ALLOWED[0])
             # 点击发送，但是收件人不对
             if not ok:
@@ -210,9 +234,7 @@ def check(state: AgentState) -> dict:
     failures = state['failures']
     done = False
     step_ok = False
-    key_step = state['allow'] and (
-    (a.get('type') == 'click' and '发送' in a.get('target', ''))
-    or a.get('type') == 'done')
+    key_step = state['allow'] and (send_kind(state) == 'send' or a.get('type') == 'done')
     if key_step:
         subject = '回复：' + task['subject']
         before = state['count_before']
