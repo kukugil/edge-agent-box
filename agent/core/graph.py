@@ -300,7 +300,16 @@ def check(state: AgentState) -> dict:
     step_ok = state['step_ok']
     a = state['action']
     if (a.get('type') == 'key' and a.get('key') == 'enter') or a.get('type') == 'done':   # 回车或模型说完成：程序复查
-        alert = verify_sent(items,state['task'],state['count_before'])
+        # 11/7 TIBO 说“你改吧”，Claude 改：只看一眼会误判（回车后那一瞬标题对不上），每秒看一次，最多 5 次
+        for i in range(5):
+            alert = verify_sent(items, state['task'], state['count_before'])
+            if alert[0] or i == 4:           # 最后一圈判完就停，不再白等 1 秒、白截一张
+                break
+            time.sleep(1)
+            shot = capture_window(state['hwnd'])
+            if shot is None:                 # 偶尔拿不到画面：沿用上一张，下一圈再试
+                continue
+            items = ocr(shot.image)          # 每圈换新图，不然看 5 次等于看同一张旧图
         print(alert[1])
         done = alert[0]
         step_ok = done

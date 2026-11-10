@@ -23,5 +23,9 @@ docs/端侧电商客服-实施方案-v1.md
 docs/飞书计划书-流程图-交接给Codex.md
 docs/端侧AI操作盒子-计划书-*.md
 
+# 方案调研报告和底稿：含合规风险分析，只留本机（11/7 定）
+reports/
+research_notes/
+
 # 跑验收的日志
 mail_run*.log
