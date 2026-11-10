@@ -41,13 +41,13 @@ g.build_graph()   # 先确认整张图建得起来：11/9 删重复函数时误�
 ok('整张图建得起来', True)
 
 # act
-for kind, act in [('click', {'type': 'click', 'target': '输入框'}), ('type', {'type': 'type', 'text': 'x'}), ('key', {'type': 'key', 'keys': 'enter'})]:
+for kind, act in [('click', {'type': 'click', 'target': '输入框'}), ('type', {'type': 'type', 'text': 'x'}), ('key', {'type': 'key', 'key': 'enter'})]:
     calls.clear(); g.activate = lambda h: (False, '窗口没响应')
     r = g.act(st(act))['steps'][-1]['result']
     ok(f'切前台失败时 {kind} 不动键鼠，记 "{r}"', calls == [] and r.startswith('切前台失败'))
 
 g.activate = lambda h: (True, '')
-calls.clear(); r = g.act(st({'type': 'key', 'keys': 'enter'}))['steps'][-1]['result']
+calls.clear(); r = g.act(st({'type': 'key', 'key': 'enter'}))['steps'][-1]['result']
 ok(f'正常按回车：记 "{r}"，按了一次', r == '已按回车' and calls == [('press', 'enter')])
 calls.clear(); r = g.act(st({'type': 'click', 'target': '发送按钮'}))['steps'][-1]['result']
 ok(f'点发送：记 "{r}"，点在 (110, 220)', r == '已点发送' and calls == [('click', 110, 220)])
@@ -71,6 +71,21 @@ for name, title, box in [('会话标题变了（列表重排、点到别的会�
     ok(f'{name} → 不按回车，记 "{r}"', calls == [] and r.startswith('发送许可作废'))
 desk.update(title='文件传输助手', box='测试回复 1')
 ok('发送许可作废 → 停', g.after_check(st({}, steps=[{'action': {}, 'result': '发送许可作废：x'}])) == END)
+
+# Codex 11/10 大洞 1：不认识的动作不能落到按回车
+g.WHITELIST = ['文件传输助手']
+calls.clear(); r = g.act(st({'type': 'noop'}))['steps'][-1]['result']
+ok(f'「做」碰到不认识的动作 → 不按回车，记 "{r}"', calls == [] and '不认识' in r)
+ok('规矩拦下不认识的动作', not g.rules(st({'type': 'noop'}, items=[]))['allow'])
+calls.clear(); g.act(st({'type': 'key', 'key': 'ctrl+v'}))
+ok('「做」碰到 enter 以外的键 → 不按', calls == [])
+
+# Codex 11/10 大洞 2：描述写"点输入框"，坐标落在「发送」按钮上
+SEND_BTN = {'text': '发送(S)', 'box': [860, 740, 930, 765], 'score': 1.0}
+for name, loc, want in [('落在按钮正中', (895, 752), False), ('偏出按钮 10px', (940, 752), False),
+                        ('离按钮远（输入框中间）', (600, 700), True)]:
+    rr = g.rules(st({'type': 'click', 'target': '输入框'}, items=[SEND_BTN], location=loc))
+    ok(f'点在{name} → {"放行" if want else "拦"}（{rr["block_reason"] or "放行"}）', rr['allow'] == want)
 
 def refuse(t, mode='empty_only'): raise InputRefused('输入框里已经有 2 个字符')
 g.paste_text = refuse

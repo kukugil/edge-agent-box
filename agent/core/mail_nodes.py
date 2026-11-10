@@ -186,6 +186,8 @@ def rules(state: AgentState) -> dict:
     # 收件人不在白名单
     if task['to'] not in ALLOWED:
         return block('收件人不在白名单')
+    if kind not in graph.ACTION_TYPES:
+        return block(f'不认识的动作 {kind!r}，只能是 click / type / done / fail')
     # 动作是type，但字段不对
     # 逐字比（第 19 条）：norm 会删标点，"测试!"打成"测试?"也会放行
     if kind == 'type' and a.get('text') != task['msg']:
@@ -210,19 +212,51 @@ def rules(state: AgentState) -> dict:
         if kind_send == 'bad':
             return block(f'实际点到的是「{state.get("hit", "")}」，不是发送按钮；要发送就点顶部写着“发送”的按钮')
         if kind_send == 'send':
-            ok,why = recipients_ok(items,ALLOWED[0])
-            # 点击发送，但是收件人不对
+            ok, why = send_ready(items, task)
             if not ok:
                 return block(why)
-            # 第 8 条：发之前再核对一次回的是哪封。主题栏是回复时自动带的，正好是"回复：原标题"才对
-            subj = [it['value'] for it in items if it['kind'] == 'EditControl' and it['text'] == '主题']
-            if subj != ['回复：' + task['subject']]:
-                return block(f'主题栏不是“回复：{task["subject"]}”，可能回错了邮件')
-            # 第 21 条：正文（不算引用区）必须逐字等于这句。只查"包含"时，夹带别的字也会放行
-            # 只看正文框里自己写的部分：引用的原邮件里可能带着上次的“测试回复 k”，整页找会被骗过
-            if body_text(items) != task['msg']:
-                return block('正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type')
     return {'allow': True, 'block_reason': ''}
+
+
+def send_ready(items: list[dict], task: dict) -> tuple[bool, str]:
+    """回信页能不能点发送：收件人、主题、正文三样都对才行。规矩和「做」里的发送许可共用。
+
+    输入：items 回信页的 read_page 结果；task 这次的任务。输出：(行不行, 不行的原因)。
+    """
+    ok, why = recipients_ok(items, ALLOWED[0])
+    if not ok:
+        return False, why
+    # 第 8 条：发之前再核对一次回的是哪封。主题栏是回复时自动带的，正好是"回复：原标题"才对
+    subj = [it['value'] for it in items if it['kind'] == 'EditControl' and it['text'] == '主题']
+    if subj != ['回复：' + task['subject']]:
+        return False, f'主题栏不是“回复：{task["subject"]}”，可能回错了邮件'
+    # 第 21 条：正文（不算引用区）必须逐字等于这句。只查"包含"时，夹带别的字也会放行
+    # 只看正文框里自己写的部分：引用的原邮件里可能带着上次的“测试回复 k”，整页找会被骗过
+    if body_text(items) != task['msg']:
+        return False, '正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type'
+    return True, ''
+
+
+def act(state: AgentState) -> dict:
+    """邮件的「做」：点发送之前当场重读页面再查一遍（发送许可），其余交给 graph.act。
+
+    为什么：规矩用的是这一圈开头读的页面，到真的点下去隔着模型思考的几秒，
+        收件人、正文可能被改，页面可能整个换了（Codex 11/10 复现：核对后改收件人，照样点了发送）。
+    输出：同 graph.act（steps、step_count）。许可作废时不点，记"发送许可作废：…"，路口会停。
+    """
+    if state['allow'] and send_kind(state) == 'send':
+        items = read_page(state['hwnd'])
+        ok, why = send_ready(items, state['task'])
+        x, y = state['location']
+        if ok and not any(it['text'] == SEND and it['box'][0] <= x <= it['box'][2] and it['box'][1] <= y <= it['box'][3]
+                          for it in items):
+            ok, why = False, '「发送」按钮不在原来的位置'
+        if not ok:
+            result = '发送许可作废：' + why
+            print(f'做\n  {result}')
+            return {'steps': state['steps'] + [{'action': state['action'], 'result': result}],
+                    'step_count': state['step_count'] + 1}
+    return graph.act(state)
 
 def check(state: AgentState) -> dict:
     """核对：不信模型说的“完成”，自己去「已发送」里数。
@@ -242,7 +276,8 @@ def check(state: AgentState) -> dict:
     failures = state['failures']
     done = False
     step_ok = False
-    key_step = state['allow'] and (send_kind(state) == 'send' or a.get('type') == 'done')
+    voided = state['steps'] and state['steps'][-1]['result'].startswith('发送许可作废')   # 没点，不用去「已发送」数
+    key_step = state['allow'] and not voided and (send_kind(state) == 'send' or a.get('type') == 'done')
     if key_step:
         subject = '回复：' + task['subject']
         before = state['count_before']
@@ -268,7 +303,7 @@ def check(state: AgentState) -> dict:
 
     
 
-NODES = {'look': look, 'think': think, 'locate': locate, 'rules': rules, 'act': graph.act, 'check': check}
+NODES = {'look': look, 'think': think, 'locate': locate, 'rules': rules, 'act': act, 'check': check}
 
 
 def main():

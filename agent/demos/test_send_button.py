@@ -70,7 +70,8 @@ for target in ('顶部写着“发送”的按钮', '顶部写着“送”的按
     s = state(target, page(GOOD_TO, True))
     ok(f'{target}：放行，点在发送按钮', s['allow'] and s['location'] == SEND_XY)
     calls.clear()
-    s.update(g.act(s))
+    mn.read_page = lambda h, _p=s["items"]: _p   # 「做」里重读页面：没变
+    s.update(mn.act(s))
     r = s['steps'][-1]['result']
     ok(f'  「做」记成 "{r}"', r == '已点发送')
     ok('  路口停下，不再来一圈', g.after_check(s) == END)
@@ -90,7 +91,7 @@ ok(f'包含匹配点到「发送通知」→ 拦（{s["block_reason"]}）', not 
 print('五、普通点击不受影响')
 s = state('顶部写着“回复”的按钮', [_t('回复', 292, 162, 320, 180)])
 ok('点「回复」放行', s['allow'])
-s.update(g.act(s))
+s.update(mn.act(s))
 ok(f'  「做」记成 "{s["steps"][-1]["result"]}"，路口继续', s['steps'][-1]['result'] == '已点击' and g.after_check(s) == 'look')
 
 print('六、第 8 条：只认标题完全一致的原邮件，发前再核对主题')
@@ -113,6 +114,28 @@ s.update(action={'type': 'type', 'text': '测试回复3'}, items=page(GOOD_TO, F
 ok('打的字少个空格 → 拦', not mn.rules(s)['allow'])
 s = state('顶部写着“发送”的按钮', page(GOOD_TO, False) + [_t('额外文字', 340, 310, 400, 328), _t('测试回复 3', 400, 310, 480, 328)])
 ok(f'正文是"额外文字 + 这句" → 不许发', not s['allow'])
+
+print('八、Codex 11/10 大洞 1：不认识的动作')
+s = g.new_state({'app': 'mail', 'to': ADDR, 'subject': '测试邮件 3', 'msg': '测试回复 3'}, 1)
+s.update(action={'type': 'noop'}, items=page(GOOD_TO, True))
+ok('动作 noop → 拦', not mn.rules(s)['allow'])
+
+print('九、Codex 11/10 大洞 3：规矩查完、点下去之前页面变了')
+for name, changed in [('收件人被改成别人', page(BAD_TO, True)),
+                      ('正文被清空', page(GOOD_TO, False)),
+                      ('页面整个换了（读不到东西）', []),
+                      ('发送按钮挪了位置', [dict(it, box=[900, 162, 930, 180]) if it['text'] == '发送' else it
+                                         for it in page(GOOD_TO, True)])]:
+    s = state('顶部写着“发送”的按钮', page(GOOD_TO, True))
+    allowed = s['allow']
+    mn.read_page = lambda h, _p=changed: _p
+    calls.clear()
+    s.update(mn.act(s))
+    r = s['steps'][-1]['result']
+    ok(f'{name} → 不点，记 "{r}"', allowed and not [c for c in calls if c[0] == 'click'] and r.startswith('发送许可作废'))
+    ok('  路口停下', g.after_check(s) == END)
+    calls.clear(); mn.check(s)
+    ok('  没点就不去「已发送」里数', ('open_folder', '已发送') not in calls)
 
 g.build_graph(mn.NODES)
 ok('邮件整张图建得起来', True)

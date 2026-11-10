@@ -187,6 +187,9 @@ def rules(state: AgentState) -> dict:
     # 1. 收件人不在白名单：条件边会直接结束
     if task['to'] not in WHITELIST:
         return block('收件人不在白名单')
+    # 1.5 只认这五种动作（Codex 11/10：原来不认识的动作在「做」里会落到按回车那一支）
+    if kind not in ACTION_TYPES:
+        return block(f'不认识的动作 {kind!r}，只能是 click / type / key / done / fail')
     # 2. 打字、回车前，当前会话必须是目标会话，不然会发错人
     if kind in ('type', 'key') and norm(chat_title(items)) != norm(task['to']):
         return block('当前会话不是目标会话，先在左侧会话列表点开目标')
@@ -229,11 +232,19 @@ def rules(state: AgentState) -> dict:
             return block('不要点「发送」按钮，字输入好后用 key enter 发送')
         if not loc:
             return block('没找到要点的位置，换一种描述')
+        # 按实际落点认（Codex 11/10）：描述写"点输入框"、坐标却落在「发送」按钮上，照样会发出去，
+        # 而且绕过回车前的发送许可。按钮四周多留 15px，定位偏一点也算点到
+        if any('发送' in it['text'] and it['box'][0] - 15 <= loc[0] <= it['box'][2] + 15
+               and it['box'][1] - 15 <= loc[1] <= it['box'][3] + 15 for it in items):
+            return block('点的位置在「发送」按钮上；字输入好后用 key enter 发送，不要点按钮')
         if loc[1] < 32:
             return block('点的位置在窗口标题栏，太危险')
         if in_web_suggestions(items, loc):
             return block('点的是网络搜索建议，会打开网页，改点联系人那一项')
     return {'allow': True, 'block_reason': ''}       # 都过了，放行
+
+
+ACTION_TYPES = ('click', 'type', 'key', 'done', 'fail')
 
 
 def send_permit(state: AgentState) -> tuple[bool, str]:
@@ -302,7 +313,11 @@ def act(state: AgentState) -> dict:
                     mode = 'replace' if state['task'].get('app') == 'mail' else 'empty_only'
                     paste_text(a.get('text', ''), mode=mode)
                     result = '已输入'
-                else:                                # key：规矩只放行 enter
+                elif kind != 'key':                  # 规矩已经拦了；这里再兜一次底，绝不落到按回车
+                    result = f'不认识的动作 {kind!r}，没动键鼠'
+                elif str(a.get('key', '')).lower() != 'enter':
+                    result = '只许按 enter，没动键鼠'
+                else:
                     ok, why = send_permit(state)     # 最后一刻再查，查过马上按
                     if ok:
                         press('enter')
