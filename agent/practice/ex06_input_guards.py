@@ -22,7 +22,13 @@ def forbidden_reason(keys: str) -> str:
     想一想：为什么要转小写？为什么 'shift+esc' 也要拦？
     """
     # TODO
-    raise NotImplementedError
+    names = {key.strip().lower() for key in keys.split('+')}
+    for unkey,why in FORBIDDEN.items():
+        if set(unkey) <= names:
+            return why
+    return ''
+
+    
 
 
 def decide(draft: str, text: str) -> str:
@@ -36,9 +42,13 @@ def decide(draft: str, text: str) -> str:
     想一想：'skip' 和 'refuse' 的判断，哪个要写在前面？为什么？只有一个空格的框，为什么也要拒绝？
     """
     # TODO
-    raise NotImplementedError
-
-
+    if draft == text:
+        return 'skip'
+    if draft == '':
+        return 'paste'   
+    else:
+        return 'refuse'
+    
 # ---------- 下面已经写好 ----------
 
 CASES_KEYS = [
