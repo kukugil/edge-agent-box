@@ -196,4 +196,12 @@ def body_text(items: list[dict]) -> str:
     bottom = min(quote) if quote else y2
     rows = [it for it in items if it['kind'] == 'TextControl' and it['text'] != '输入正文'
             and x1 <= it['box'][0] <= x2 and y1 <= it['box'][1] < bottom]
-    return ''.join(it['text'] for it in sorted(rows, key=lambda it: (it['box'][1], it['box'][0])))
+    # 坑（11/11 真机）：粘完正文后，控件树在同一个起点还多一块只有 "n" 的文字（剪贴板读回框里只有那句，
+    # 所以它不是真的字，是邮箱编辑器的残影）。D12 改成逐字比以后，它把正常回复全拦了。
+    # 同一起点（x1、y1 都相同）只留最长的那块；用户真打的别的字落在别的位置，照样会被比出来
+    best = {}
+    for it in rows:
+        key = (it['box'][0], it['box'][1])
+        if key not in best or len(it['text']) > len(best[key]['text']):
+            best[key] = it
+    return ''.join(it['text'] for it in sorted(best.values(), key=lambda it: (it['box'][1], it['box'][0])))

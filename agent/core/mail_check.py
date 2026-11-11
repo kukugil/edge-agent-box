@@ -76,9 +76,45 @@ def count_subject(items: list[dict], subject: str) -> int:
             rows.append(y)
     return len(rows)
            
-def judge_replied(items, subject, count_before, still_composing=False):
-    """输入已发送列表、标题、发前行数及草稿证据，输出三态和脱敏原因。"""
+def top_subjects(items: list[dict], n: int = 3) -> list[str]:
+    """「已发送」列表最上面 n 行的标题，从上到下。
+
+    输入：「已发送」页面的 read_page 结果。输出：标题列表（不足 n 行就少交回）。
+    标题列按"回复：测试邮件 k"这种字块的 x1 认（同一列左对齐）；左侧栏里打开过的邮件标签 x 小于 NAV_RIGHT，不算。
+    """
+    cols = [it['box'][0] for it in items if it['kind'] == 'TextControl' and it['box'][0] > NAV_RIGHT
+            and it['box'][1] > LIST_TOP and it['text'].startswith('回复：')]
+    if not cols:
+        return []
+    col = max(set(cols), key=cols.count)   # 出现最多的那个 x 就是标题列
+    rows, last_y = [], None
+    for it in sorted((it for it in items if it['kind'] == 'TextControl' and abs(it['box'][0] - col) <= 3
+                      and it['box'][1] > LIST_TOP), key=lambda it: it['box'][1]):
+        if last_y is not None and it['box'][1] - last_y <= 3:   # 同一行读了两次
+            continue
+        rows.append(it['text'])
+        last_y = it['box'][1]
+    return rows[:n]
+
+
+def judge_replied(items, subject, count_before, still_composing=False, top_before=None):
+    """输入已发送列表、标题、发前行数及草稿证据，输出三态和脱敏原因。
+
+    top_before：发之前「已发送」最上面 3 行的标题（top_subjects）。给了就优先按它判：
+        11/11 真机三封都只发了 1 次，却因为"数可见区里的同标题行"被旧行挤出、重复标题干扰，全判成不确定。
+        新邮件总插在最上面，所以看"最上面是这封、下面紧跟着原来的头两行" → 正好新插进 1 封。
+    """
     from agent.core.check import OK, FAIL, UNKNOWN
+    if top_before is not None:
+        now = top_subjects(items, 3)
+        if now[:1] == [subject] and now[1:3] == top_before[:2]:
+            return OK, '「已发送」最上面正好新插进这一封'
+        if now[:2] == [subject, subject] and now[2:3] == top_before[:1]:
+            return UNKNOWN, '「已发送」最上面新插进两封同标题的，可能发了两次，需人工确认'
+        # 有发前快照就只认它：数可见区的条数不可靠，不再拿它判成功
+        if still_composing:
+            return FAIL, '仍在回信页且正文完整保留'
+        return UNKNOWN, '「已发送」最上面不是正好新插进这一封'
     delta = count_subject(items, subject) - count_before
     if delta == 1:
         return OK, '已发送列表正好多一行'

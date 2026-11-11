@@ -432,7 +432,7 @@ def new_state(task: dict, hwnd: int) -> AgentState:
     """开头的状态：15 个键都要有值，节点读不到键会报 KeyError。"""
     return {'task': task, 'steps': [], 'step_count': 0, 'failures': 0,
             'picture': None, 'action': {}, 'location': [], 'hit': '', 'allow': False, 'outcome': '', 'done': False,'step_ok': False,
-            'hwnd': hwnd, 'count_before': 0, 'items': [], 'block_reason': ''}
+            'hwnd': hwnd, 'count_before': 0, 'top_before': [], 'items': [], 'block_reason': ''}
 
 
 WIN_SIZE = (960, 800)   # check.py 里那几条坐标线是按这个大小量的，开跑前把窗口设成它

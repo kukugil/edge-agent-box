@@ -137,6 +137,29 @@ for name, changed in [('收件人被改成别人', page(BAD_TO, True)),
     calls.clear(); mn.check(s)
     ok('  没点就不去「已发送」里数', ('open_folder', '已发送') not in calls)
 
+print('十一、11/11 真机：正文框同一起点多一块 "n" 残影')
+ghost = page(GOOD_TO, True) + [_t('n', 340, 310, 349, 328)]   # 和 MSG 同一个起点
+s = state('顶部写着“发送”的按钮', ghost)
+ok(f'同起点的 "n" 残影不算 → 放行（{s["block_reason"] or "放行"}）', s['allow'])
+extra = page(GOOD_TO, True) + [_t('额外', 430, 310, 470, 328)]   # 起点不同的真字
+s = state('顶部写着“发送”的按钮', extra)
+ok('别的位置多出的字照样拦', not s['allow'])
+
+print('十二、11/11 真机：「已发送」按最上面几行判，不数可见区')
+from agent.core.mail_check import judge_replied, top_subjects
+def sent(*subjects, nav=()):
+    rows = [_t(s, 494, 278 + 40 * i, 605, 296 + 40 * i) for i, s in enumerate(subjects)]
+    return [_t(s, 52, 203 + 34 * i, 163, 221 + 34 * i) for i, s in enumerate(nav)] + rows   # 左侧栏标签不算
+before_top = ['回复：测试邮件 2', '回复：测试邮件 3', '回复：测试邮件 1']
+R1, R2, R3 = '回复：测试邮件 1', '回复：测试邮件 2', '回复：测试邮件 3'
+ok('top_subjects 不算左侧栏标签', top_subjects(sent(R2, R3, R1, nav=(R1, R1)), 3) == before_top)
+for name, after, want in [('正好新插进 1 封（旧行被挤出可见区也没关系）', sent(R1, R2, R3), 'ok'),
+                          ('插进两封同标题 → 不确定', sent(R1, R1, R2), 'unknown'),
+                          ('最上面不是这封 → 不确定', sent(R2, R3, R1), 'unknown'),
+                          ('同一行读了两次也只算一行', sent(R1, R2, R3) + [_t(R1, 494, 280, 605, 298)], 'ok')]:
+    got = judge_replied(after, R1, 1, top_before=before_top)[0]
+    ok(f'{name} → {got}', got == want)
+
 print('十、打开文件夹前 Chrome 切不到前台 → 一下都不点')
 import agent.tools.web as web
 import agent.tools.inputs as inp

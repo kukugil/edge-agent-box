@@ -16,5 +16,6 @@ class AgentState(TypedDict):
     done:  bool        # 整个节点是否完成
     hwnd:  int         # 窗口句柄
     count_before: int  # 窗口同一条消息计数
+    top_before: list   # 邮件：发前「已发送」最上面几行的标题（11/11）
     items: list        # 「看」时的 OCR 结果，定位校正和规矩都要用
     block_reason: str  # 规矩拦下的原因，「做」记进 steps，模型下一圈能看到

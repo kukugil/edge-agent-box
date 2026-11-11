@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from agent.core import graph                       # 复用 act、after_check、new_state、build_graph
-from agent.core.mail_check import count_subject, recipients_ok, judge_replied
+from agent.core.mail_check import count_subject, recipients_ok, judge_replied, top_subjects
 from agent.core.state import AgentState
 from agent.demos.baseline_loop import parse_json
 from agent.tools import activate, capture_window, chat, norm, screen_changed
@@ -281,16 +281,17 @@ def check(state: AgentState) -> dict:
     if key_step:
         subject = '回复：' + task['subject']
         before = state['count_before']
+        top_before = state.get('top_before') or None
         for i in range(10):
             items = open_folder(state['hwnd'], '已发送')
-            if count_subject(items, subject) > before:
+            if judge_replied(items, subject, before, top_before=top_before)[0] == 'ok':
                 break
             time.sleep(1)
         composing = read_page(state['hwnd'])
         still_composing = (body_text(composing) == task['msg'] and
                            any(it['kind'] == 'EditControl' and it['text'] == '主题'
                                and it['value'] == '回复：' + task['subject'] for it in composing))
-        outcome, why = judge_replied(items, subject, before, still_composing)
+        outcome, why = judge_replied(items, subject, before, still_composing, top_before)
         ok = outcome == 'ok'
         print(f'核对:{why}')
         if ok:
@@ -328,6 +329,7 @@ def main():
         sys.exit('打不开「已发送」')
     state = graph.new_state(task, hwnd)
     state['count_before'] = count_subject(items, '回复：' + task['subject'])
+    state['top_before'] = top_subjects(items, 3)   # 发前「已发送」最上面 3 行，核对按"正好新插进 1 封"判（11/11）
     print(f"「已发送」里原来有 {state['count_before']} 封同标题的")
     if not open_folder(hwnd, '收件箱'):
         sys.exit('回不到「收件箱」')
