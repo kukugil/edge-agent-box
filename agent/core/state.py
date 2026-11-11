@@ -12,6 +12,7 @@ class AgentState(TypedDict):
     hit: str           # 定位实际点到的元素文字（邮件用；微信暂不填）。认"发送"按它，不按模型写的 target
     allow:  bool       # 步骤是否允许
     step_ok: bool      # 这一步是否通过
+    outcome: str      # 空串表示还没核对发送结果
     done:  bool        # 整个节点是否完成
     hwnd:  int         # 窗口句柄
     count_before: int  # 窗口同一条消息计数

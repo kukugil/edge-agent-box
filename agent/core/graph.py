@@ -18,8 +18,9 @@ from pathlib import Path
 
 from langgraph.graph import StateGraph, START, END
 
-from agent.core.check import LIST_RIGHT, chat_title, count_msg, verify_sent
+from agent.core.check import LIST_RIGHT, chat_title, title_matches, count_msg, judge_sent, layout, OK, UNKNOWN
 from agent.core.state import AgentState
+from agent.tools import journal
 from agent.demos.baseline_loop import in_web_suggestions, parse_json  # 微信界面知识先借用，D11 挪进应用配置
 from agent.tools import (activate, capture_window, chat, check_responsive, click, find_windows, ground,
                          find_text, load_config, norm, ocr, paste_text, press, screen_changed, set_window_size, snap_to_text, window_rect,InputRefused,
@@ -92,7 +93,7 @@ def look(state: AgentState) -> dict:
     out = {'picture': shot.image, 'items': items}
     # 发之前的条数只在还没按过回车时数：按过以后再数，刚发的那条会被算进“之前”
     if not any(s['result'] == '已按回车' for s in state['steps']):
-        out['count_before'] = count_msg(items, state['task']['msg'])
+        out['count_before'] = count_msg(items, state['task']['msg'], layout(shot.image))
     return out
 
 def think(state: AgentState) -> dict:
@@ -191,7 +192,10 @@ def rules(state: AgentState) -> dict:
     if kind not in ACTION_TYPES:
         return block(f'不认识的动作 {kind!r}，只能是 click / type / key / done / fail')
     # 2. 打字、回车前，当前会话必须是目标会话，不然会发错人
-    if kind in ('type', 'key') and norm(chat_title(items)) != norm(task['to']):
+    #    读不清和对不上分开报：11/11 真机有一轮连拦 6 次，没法区分是 OCR 可信度不够（<0.9、带省略号）还是真切走了
+    if kind in ('type', 'key') and not title_matches(items, task['to']):
+        if not chat_title(items):
+            return block('会话标题读不清（可能被遮住或识别不稳），先别输入；稍等再看一眼')
         return block('当前会话不是目标会话，先在左侧会话列表点开目标')
     # 3. 打的字必须就是要发的那句，不许模型自己编
     #    逐字比（第 19 条）：norm 会删标点，"测试!"打成"测试?"也会放行
@@ -259,7 +263,7 @@ def send_permit(state: AgentState) -> tuple[bool, str]:
     shot = capture_window(state['hwnd'])
     if shot is None:
         return False, '截不到微信画面'
-    if norm(chat_title(ocr(shot.image))) != norm(task['to']):
+    if not title_matches(ocr(shot.image), task['to']):
         return False, '当前会话标题已经不是目标'
     back = read_focused_text()
     if back != task['msg']:
@@ -316,6 +320,7 @@ def act(state: AgentState) -> dict:
                 else:
                     ok, why = send_permit(state)     # 最后一刻再查，查过马上按
                     if ok:
+                        journal.record(state['task'], 'about_to_send')
                         press('enter')
                         result = '已按回车'
                     else:
@@ -330,21 +335,13 @@ def act(state: AgentState) -> dict:
 
 
 def check(state: AgentState) -> dict:
-    """核对：重新截一张图，程序独立判断发对没有，不信模型说的“完成”。
+    """输入执行后的状态，输出 done、outcome、failures、step_ok。
 
-    输出：done 和 failures 两个键。
-    提示：
-      - 一定要重新截图：state['picture'] 是「做」之前截的，看不到刚发的消息
-      - 判断直接用 check.py 里的 verify_sent，它要三样东西：识别结果、task、count_before
-      - 把 verify_sent 交回的原因打印出来，跑的时候才知道是哪条没过
-    TODO（D6 第三步）：模型说 'done' 时也要跑 verify_sent，程序复查它说的对不对。
-         改一下 if 的条件：动作是按回车，或者动作是 done。
+    发送后最多取五张图；仍不确定时只读回一次输入框，禁止盲目重发。
+    普通步骤保留画面变化检查，输入步骤以粘贴后的读回结果为准。
     """
-    # TODO
     shot = capture_window(state['hwnd'])
-    if shot is None:
-        sys.exit('截图失败')
-    items = ocr(shot.image)
+    items = ocr(shot.image) if shot is not None else []
     failures = state['failures']
     done = state['done']
     step_ok = state['step_ok']
@@ -352,21 +349,25 @@ def check(state: AgentState) -> dict:
     # 转小写：规矩放行大写 ENTER，这里只认小写的话会跳过核对（Codex 11/10）
     pressed = bool(state['steps']) and state['steps'][-1]['result'] == '已按回车'   # 被拦下的回车没按，不用去等消息
     if pressed or a.get('type') == 'done':   # 真按了回车或模型说完成：程序复查
-        # 只看一眼会误判（回车后那一瞬标题对不上），每秒看一次，最多 5 次
+        outcome, why = UNKNOWN, '未取得可核对的截图'
         for i in range(5):
-            alert = verify_sent(items, state['task'], state['count_before'])
-            if alert[0] or i == 4:           # 最后一圈判完就停，不再白等 1 秒、白截一张
+            if shot is not None:
+                outcome, why = judge_sent(items, state['task'], state['count_before'],
+                                          layout(shot.image), image=shot.image)
+            if outcome == OK or i == 4:
                 break
             time.sleep(1)
             shot = capture_window(state['hwnd'])
-            if shot is None:                 # 偶尔拿不到画面：沿用上一张，下一圈再试
-                continue
-            items = ocr(shot.image)          # 每圈换新图，不然看 5 次等于看同一张旧图
-        print(alert[1])
-        done = alert[0]
-        step_ok = done
-        if not alert[0]:
-            failures += 1      
+            if shot is not None:
+                items = ocr(shot.image)
+        if outcome != OK:
+            back = read_focused_text()
+            if shot is not None:
+                outcome, why = judge_sent(items, state['task'], state['count_before'],
+                    layout(shot.image), still_in_box=(back == state['task']['msg']), image=shot.image)
+        print(why)
+        done = outcome == OK
+        return {'done': done, 'outcome': outcome, 'failures': failures + (not done), 'step_ok': done}
     elif a.get('type') == 'type':
         # 打字：「做」里 paste_text 粘完已经用剪贴板逐字读回过，记了"已输入"就是框里正好是这句。
         # 不再用 OCR 数条数：11/10 真机会认漏，白记失败
@@ -375,7 +376,7 @@ def check(state: AgentState) -> dict:
         if not step_ok:
             failures += 1
     else:
-        step_ok = screen_changed(state['picture'],shot.image)
+        step_ok = shot is not None and screen_changed(state['picture'],shot.image)
         print(f"  核对：画面{'变了' if step_ok else '没变'}")
         if not step_ok:
             failures += 1
@@ -430,7 +431,7 @@ def build_graph(nodes=None):
 def new_state(task: dict, hwnd: int) -> AgentState:
     """开头的状态：15 个键都要有值，节点读不到键会报 KeyError。"""
     return {'task': task, 'steps': [], 'step_count': 0, 'failures': 0,
-            'picture': None, 'action': {}, 'location': [], 'hit': '', 'allow': False, 'done': False,'step_ok': False,
+            'picture': None, 'action': {}, 'location': [], 'hit': '', 'allow': False, 'outcome': '', 'done': False,'step_ok': False,
             'hwnd': hwnd, 'count_before': 0, 'items': [], 'block_reason': ''}
 
 

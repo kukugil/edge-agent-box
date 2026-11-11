@@ -45,7 +45,10 @@ def badge_rows(image: Image.Image) -> list[tuple[int, int, int, int]]:
     out = []
     for x1, y1, x2, y2 in find_red_dots(image, BADGE_X[1]):
         if BADGE_X[0] <= (x1 + x2) / 2 <= BADGE_X[1]:
-            out.append((x1, y1, x2, y2))
+            small = x2 - x1 < DOT_ONLY and y2 - y1 < DOT_ONLY
+            white = any(min(pixel) > 230 for pixel in image.convert('RGB').crop((x1, y1, x2, y2)).getdata())
+            if small or white:
+                out.append((x1, y1, x2, y2))
     return out
 
 
@@ -110,6 +113,6 @@ def find_row(image: Image.Image, title: str) -> tuple[int, int] | None:
     """
     rows = [(BADGE_X[0] + 11, y, TITLE_X[0], y + 15) for y in range(ROW_TOP, image.height - ROW_H // 2, ROW_H)]
     for row, text in zip(rows, read_titles(image, rows)):
-        if norm(text) == norm(title):
+        if not text.endswith(('…', '...')) and norm(text) == norm(title):
             return (TITLE_X[0] + 44, row[1] + 25)
     return None

@@ -24,63 +24,81 @@ CHAT_TOP = 80        # 聊天区（消息气泡）的上沿
 CHAT_BOTTOM = 645    # 聊天区的下沿，再往下是工具栏和输入框（11/4 按 960×800 的窗口重量，原来 710 把输入框也算进去了）
 
 
-def chat_title(items: list[dict]) -> str:
-    """取出右侧聊天区顶部的会话标题。
+DEFAULT_LAYOUT = {'right': 960, 'bottom': CHAT_BOTTOM}
+OK, FAIL, UNKNOWN = 'ok', 'fail', 'unknown'
 
-    输入：ocr() 的结果，[{'text': ..., 'box': [x1, y1, x2, y2], 'score': ...}, ...]
-    输出：标题文字；一条都没找到时返回空字符串。
-    提示：标题的字满足三条——x1 在会话列表右边，y1 在标题栏下面，y2 在 TITLE_BOTTOM 上面。
-         标题偶尔会被 OCR 拆成几段，把符合条件的都拼起来。
-    """
-    # TODO
-    title = ''
-    parts = []
-    for it in items:
-        if it['box'][0] > LIST_RIGHT and it['box'][1] > TITLE_TOP and it['box'][3] < TITLE_BOTTOM:
-            parts.append(it)        
-    new_items = sorted(parts,key=lambda it: it['box'][0])
-    for it in new_items:
-        title = title + it['text']
+
+def chat_bottom(image) -> int:
+    """输入窗口图，输出聊天底边；用灰色分隔线适配高度，不读文字。"""
+    import numpy as np
+    pixels = np.asarray(image.convert('L'))
+    expected = image.height - 145
+    left, right = LIST_RIGHT + 20, image.width - 20
+    for y in range(min(image.height - 2, expected + 40), max(1, expected - 200) - 1, -1):
+        row = pixels[y, left:right]
+        if row.size and row.std() < 2 and abs(float(row.mean()) - 236) < 4:
+            if (abs(float(row.mean()) - float(pixels[y - 1, left:right].mean())) > 4
+                    and abs(float(row.mean()) - float(pixels[y + 1, left:right].mean())) > 2):
+                return y - 10
+    return expected - 10
+
+
+def layout(image) -> dict:
+    """输入同一张窗口图，输出聊天区右边和底边，避免混用旧尺寸。"""
+    return {'right': image.width, 'bottom': chat_bottom(image)}
+
+
+def chat_title(items: list[dict]) -> str:
+    """输入 OCR 字块，输出完整可信的标题；截断或低置信度时返回空串。"""
+    parts = sorted((it for it in items if it['box'][0] > LIST_RIGHT
+                    and it['box'][1] > TITLE_TOP and it['box'][3] < TITLE_BOTTOM),
+                   key=lambda it: it['box'][0])
+    title = ''.join(it['text'] for it in parts)
+    if title.endswith(('…', '...')) or any(it.get('score', 0) < 0.9 for it in parts):
+        return ''
     return title
 
 
-def count_msg(items: list[dict], msg: str) -> int:
-    """数聊天区里有几条文字和 msg 一样。
+def title_matches(items: list[dict], name: str) -> bool:
+    """输入 OCR 字块和目标名，输出是否完整匹配；读不清时拒绝认人。"""
+    title = chat_title(items)
+    return bool(title) and norm(title) == norm(name)
 
-    输入：ocr() 的结果；msg 是要找的消息。
-    输出：条数，一条都没有就是 0。
-    提示：“在聊天区里”和“和 msg 一样”的判断，verify_sent 里你已经写过了，搬过来，从“找到就返回”改成“找到就加 1”。
-    """
-    # TODO
-    count = 0
-    msg2 = []
-    for it in items:
-        if it['box'][1] > CHAT_TOP and it['box'][3] < CHAT_BOTTOM and it['box'][0] > LIST_RIGHT:
-            msg2.append(it)
-    for it in msg2:
-        if norm(it['text']) == norm(msg):
-            count += 1
-    return count
 
-def verify_sent(items: list[dict], task: dict, count_before: int) -> tuple[bool, str]:
-    """核对这条消息有没有发对、发出去。
+def is_ours(item: dict, lay=DEFAULT_LAYOUT) -> bool:
+    """输入字块和布局，输出中心是否在聊天区右半边，用来区分发送方。"""
+    return (item['box'][0] + item['box'][2]) / 2 > (LIST_RIGHT + lay['right']) / 2
 
-    输入：items 是发送之后截图的 OCR 结果；task 里有 'to'（发给谁）和 'msg'（发什么）；
-         count_before 是发之前聊天区里数到几条这句话。
-    输出：(通过没有, 原因)。原因用一句话说是哪一条没过，比如 '标题不对'。
-         原因里不要写出识别到的名字和消息内容，日志里不留聊天内容。
-    要查两条：
-      1. 会话标题就是 task['to']。用相等，不用“包含”：要发给“小王”，标题是“小王2”也不能算对。
-      2. 聊天区里和 task['msg'] 一样的条数，比 count_before 多。
-         只查“有没有”不够：以前发过同一句话，这次没发成功，聊天区里照样有。
-    提示：比较文字前都过一遍 norm()，OCR 常把空格和标点认错。第 2 条可以直接用 count_msg。
-    """
-    # TODO
-    if norm(task['to']) == norm(chat_title(items)):
-        if count_msg(items, task['msg']) > count_before:
-            return (True,'检查全部通过')
-        return (False,'聊天区没有多出这条消息')
-    return (False,'标题不对')
+
+def count_msg(items: list[dict], msg: str, lay=DEFAULT_LAYOUT) -> int:
+    """输入 OCR、消息和布局，输出聊天区我方完全匹配的气泡数。"""
+    return sum(it['box'][0] > LIST_RIGHT and it['box'][1] > CHAT_TOP
+               and it['box'][3] < lay['bottom'] and is_ours(it, lay)
+               and norm(it['text']) == norm(msg) for it in items)
+
+
+def judge_sent(items, task, count_before, lay=DEFAULT_LAYOUT, still_in_box=None, image=None):
+    """输入发后 OCR、任务、发前计数及可选读回/图，输出三态和脱敏原因。"""
+    if not title_matches(items, task['to']):
+        return UNKNOWN, '标题读不清或不是目标会话'
+    if count_msg(items, task['msg'], lay) > count_before:
+        if image is not None:
+            from agent.tools import find_red_dots
+            bubbles = [it for it in items if count_msg([it], task['msg'], lay)]
+            x1, y1, x2, y2 = max(bubbles, key=lambda it: it['box'][3])['box']
+            region = image.crop((max(0, x1 - 45), max(0, y1 - 5), x1, min(image.height, y2 + 5)))
+            if find_red_dots(region):
+                return UNKNOWN, '气泡旁有发送失败标记'
+        return OK, '我方聊天区多出这条消息'
+    if still_in_box is True:
+        return FAIL, '输入框仍完整保留待发送文字'
+    return UNKNOWN, '未确认新的我方消息'
+
+
+def verify_sent(items, task, count_before, lay=DEFAULT_LAYOUT, still_in_box=None, image=None):
+    """输入同 judge_sent，输出旧版布尔结果和原因，保留调用兼容性。"""
+    result, why = judge_sent(items, task, count_before, lay, still_in_box, image)
+    return result == OK, why
 
 # ---------- 下面已经写好 ----------
 
@@ -119,12 +137,13 @@ def run_offline() -> None:
     print('核对逻辑全对')
 
 
-def _grab(hwnd: int) -> list[dict]:
-    """截一张窗口画面并识别文字。"""
+def _grab(hwnd: int, with_layout=False):
+    """输入窗口句柄和布局选项，输出 OCR 或 OCR、布局、图，供现场核对使用。"""
     shot = capture_window(hwnd)
     if shot is None:
         sys.exit('截图失败（窗口最小化或藏起来了？）')
-    return ocr(shot.image)
+    items = ocr(shot.image)
+    return (items, layout(shot.image), shot.image) if with_layout else items
 
 
 def run_live(to: str, msg: str) -> None:
@@ -137,10 +156,12 @@ def run_live(to: str, msg: str) -> None:
     l, t, r, b = window_rect(hwnd)
     print(f'微信窗口 {r - l}x{b - t}（上面的位置常量是按实验时的大小量的，差太多会判错）')
 
-    before = count_msg(_grab(hwnd), msg)
+    items, lay, image = _grab(hwnd, with_layout=True)
+    before = count_msg(items, msg, lay)
     print(f'发之前：聊天区里有 {before} 条')
     input('现在在微信里手动发这条消息，发完按回车（想测“没发成功”就直接按回车）')
-    ok, reason = verify_sent(_grab(hwnd), {'to': to, 'msg': msg}, before)
+    items, lay, image = _grab(hwnd, with_layout=True)
+    ok, reason = verify_sent(items, {'to': to, 'msg': msg}, before, lay, image=image)
     print('通过' if ok else f'不通过：{reason}')
 
 def main():

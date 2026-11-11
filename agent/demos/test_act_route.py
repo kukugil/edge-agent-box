@@ -17,7 +17,8 @@ g.paste_text = lambda t, mode='empty_only': calls.append(('paste', t, mode))
 desk = {'title': '文件传输助手', 'box': '测试回复 1'}
 g.capture_window = lambda h: type('Shot', (), {'image': None})()
 g.ocr = lambda img: []
-g.chat_title = lambda items: desk['title']
+g.title_matches = lambda items, name: desk['title'] == name
+g.journal.record = lambda task, status: None
 g.read_focused_text = lambda: desk['box']
 
 
@@ -116,7 +117,7 @@ ok('没输字就 key enter → 拦', not g.rules(st({'type': 'key', 'key': 'ente
 ok('还没输字时 click 输入框 → 放行', g.rules(st({'type': 'click', 'target': '输入框'}, steps=typed[:1], items=[], location=(300, 300)))['allow'])
 
 # 核对：被拦下的回车不去等消息；打字按读回结果算
-g.verify_sent = lambda items, task, before: (_ for _ in ()).throw(AssertionError('不该去核对'))
+g.judge_sent = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('不该去核对'))
 g.screen_changed = lambda a, b: False
 c = g.check(st({'type': 'key', 'key': 'enter'}, steps=typed + [{'action': {}, 'result': '按 enter 之前必须先 type'}], picture=None, step_ok=False))
 ok('回车被拦下 → 不去核对聊天区', c['done'] is False)

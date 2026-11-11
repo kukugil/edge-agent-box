@@ -69,20 +69,30 @@ def count_subject(items: list[dict], subject: str) -> int:
         if (it['kind'] == 'TextControl' and it['box'][0] > NAV_RIGHT 
         and it['box'][1] > LIST_TOP and norm(it['text']) == norm(subject)):
             mails.append(it)
-    return len(mails)
+    rows = []
+    for it in sorted(mails, key=lambda it: it['box'][1]):
+        y = it['box'][1]
+        if not rows or y - rows[-1] > 3:
+            rows.append(y)
+    return len(rows)
            
-def verify_replied(items: list[dict], subject: str, count_before: int) -> tuple[bool, str]:
-    """核对回复有没有真的发出去：「已发送」里标题是 subject 的邮件，比发之前多。
+def judge_replied(items, subject, count_before, still_composing=False):
+    """输入已发送列表、标题、发前行数及草稿证据，输出三态和脱敏原因。"""
+    from agent.core.check import OK, FAIL, UNKNOWN
+    delta = count_subject(items, subject) - count_before
+    if delta == 1:
+        return OK, '已发送列表正好多一行'
+    if delta > 1:
+        return UNKNOWN, '已发送列表多于一行，需人工确认'
+    if delta <= 0 and still_composing:
+        return FAIL, '仍在回信页且正文完整保留'
+    return UNKNOWN, '未确认新增的已发送邮件'
 
-    输入：items 是发送后「已发送」页面的 read_page 结果；count_before 是发送前数到的条数。
-    输出：(通过没有, 原因)。
-    为什么要和发之前比：同一封邮件以前回复过一次，「已发送」里本来就有一封同样的标题。
-    """
-    # TODO
-    now = count_subject(items, subject)
-    if now > count_before:
-        return (True,f'发前 {count_before} 封，现在 {now} 封')   
-    return (False,f'发前 {count_before} 封，现在 {now} 封')
+
+def verify_replied(items, subject, count_before):
+    """输入发送列表、标题和旧计数，输出兼容的布尔结果及原因。"""
+    result, why = judge_replied(items, subject, count_before)
+    return result == 'ok', why
 
 
 # ---------- 下面已经写好 ----------

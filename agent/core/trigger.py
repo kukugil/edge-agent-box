@@ -13,6 +13,8 @@ pick_sessions 由 TIBO 写（11/7，离线 9/9）；serve 按 TIBO 要求由 Cla
   python -m agent.core.trigger --offline     不碰微信，测试回复后检查和 pick_sessions
   python -m agent.core.trigger 600           真的盯 600 秒，有白名单好友发消息就回。会动键鼠，跑的时候别碰鼠标键盘
 """
+import argparse
+import uuid
 import ctypes
 import json
 import sys
@@ -22,10 +24,11 @@ from datetime import datetime
 from pathlib import Path
 
 from agent.core import graph
+from agent.tools import journal
 from PIL import Image
 
 from agent.tools import capture_window, check_responsive, click, norm, ocr, set_window_size, activate, window_rect, Shot
-from agent.core.check import CHAT_BOTTOM, CHAT_TOP, LIST_RIGHT, chat_title
+from agent.core.check import CHAT_TOP, LIST_RIGHT, chat_title, title_matches, layout, is_ours
 from agent.tools.unread import bell_state, find_row, find_unread_rows
 
 POLL = 0.5        # 门铃每隔几秒看一眼：通过线是 5 秒内发现，0.5 秒留足余量
@@ -46,12 +49,13 @@ def ts() -> str:
     return datetime.now().strftime('%H:%M:%S.%f')[:-3]
 
 
-def chat_sig(shot) -> bytes:
+def chat_sig(shot, lay=None) -> bytes:
     """聊天区的“样子”：缩成小图比像素，只看变没变，不读内容。
 
     用途：聊天区变了、门铃却没变，就说明来了消息但微信没出角标，正是要抓的那种漏。
     """
-    im = shot.image.crop((LIST_RIGHT, CHAT_TOP, shot.image.width, CHAT_BOTTOM))
+    lay = layout(shot.image) if lay is None else lay
+    im = shot.image.crop((LIST_RIGHT, CHAT_TOP, shot.image.width, lay['bottom']))
     return im.convert('L').resize((48, 64)).tobytes()
 
 
@@ -100,15 +104,16 @@ def open_title(shot) -> str:
     return chat_title(ocr_crop(shot, title_box(shot)))
 
 
-def chat_items(shot) -> list[dict]:
+def chat_items(shot, lay=None) -> list[dict]:
     """标题条 + 聊天区的 OCR，坐标换回整张截图。
 
     为什么裁开识别：11/8 实测整张窗口一起 OCR 时，聊天区的字一条都没认出来，裁出来单独识别就有。
     """
-    return ocr_crop(shot, title_box(shot)) + ocr_crop(shot, (LIST_RIGHT, CHAT_TOP, shot.image.width, CHAT_BOTTOM))
+    lay = layout(shot.image) if lay is None else lay
+    return ocr_crop(shot, title_box(shot)) + ocr_crop(shot, (LIST_RIGHT, CHAT_TOP, shot.image.width, lay['bottom']))
 
 
-def new_after_reply(shot: Shot, items: list[dict], task: dict) -> str:
+def new_after_reply(shot: Shot, items: list[dict], task: dict, lay=None) -> str:
     """我们刚发的回复下面，还有没有别的东西。不碰窗口，可以离线测。
 
     输入：shot 截图；items 是 chat_items(shot)；task 是回过的那个任务（to、msg）
@@ -119,16 +124,17 @@ def new_after_reply(shot: Shot, items: list[dict], task: dict) -> str:
     为什么数像素不用 OCR：对方发单个字时 OCR 常常认不出来（11/8 一屏的“1”“2”全漏）。
     头像两列不算（对方头像会跟着新消息出现，但我们自己的头像也在那一列）。
     """
-    if norm(chat_title(items)) != norm(task['to']):
+    lay = layout(shot.image) if lay is None else lay
+    if not title_matches(items, task['to']):
         return OTHER
     chat = [it for it in items
-            if it['box'][0] > LIST_RIGHT and it['box'][1] > CHAT_TOP and it['box'][3] < CHAT_BOTTOM]
-    ours = [it for it in chat if norm(it['text']) == norm(task['msg'])]
+            if it['box'][0] > LIST_RIGHT and it['box'][1] > CHAT_TOP and it['box'][3] < lay['bottom']]
+    ours = [it for it in chat if is_ours(it, lay) and norm(it['text']) == norm(task['msg'])]
     if not ours:
         return UNKNOWN
     bottom = max(it['box'][3] for it in ours)
     below = shot.image.convert('L').crop(
-        (LIST_RIGHT + 60, min(bottom + 14, CHAT_BOTTOM), shot.image.width - 60, CHAT_BOTTOM))
+        (LIST_RIGHT + 60, min(bottom + 14, lay['bottom']), LIST_RIGHT + int((lay['right'] - LIST_RIGHT) * 0.4), lay['bottom']))
     return NEW if sum(below.histogram()[:160]) > 20 else NONE
 
 
@@ -234,18 +240,23 @@ def open_chat(hwnd: int, title: str) -> Shot | None:
       点到了别的会话（被规矩拦下，连败两次就放弃）。程序从读到点只隔一次标题 OCR，约 0.6 秒。
     """
     shot = capture_window(hwnd)
-    if norm(open_title(shot)) != norm(title):   # 已经开着就不碰列表：单人连着回时省 2 秒多
+    if shot is None:
+        return None
+    if not title_matches(ocr_crop(shot, title_box(shot)), title):   # 已经开着就不碰列表：单人连着回时省 2 秒多
         point = find_row(shot.image, title)
         if point is None:
             print('  列表里没找到这个会话')
             return None
         click(*shot.to_screen(*point))
         time.sleep(0.5)                  # 等右边换成这个会话
-        if norm(open_title(capture_window(hwnd))) != norm(title):
-            print('  点开后标题对不上')
-            return None
     # 再点一下输入框：点列表行后焦点停在列表上，模型的 type 是直接粘贴、不先点输入框，字会落空（11/9 实测）
-    click(*shot.to_screen((LIST_RIGHT + shot.image.width) // 2, CHAT_BOTTOM + 50))
+    current = capture_window(hwnd)
+    if current is None or not title_matches(ocr_crop(current, title_box(current)), title):
+        print('  点开后标题对不上')
+        return None
+    lay = layout(current.image)
+    # bottom 在分隔线上方 10 像素，故输入点要加 60 才是线下 50。
+    click(*current.to_screen((LIST_RIGHT + lay['right']) // 2, lay['bottom'] + 60))
     return shot
 
 
@@ -276,11 +287,17 @@ def run_one(hwnd: int, task: dict) -> tuple[str, Shot | None]:
     before = open_chat(hwnd, task['to']) if prepare(hwnd) else None
     t1 = time.time()
     if before is None:
+        journal.record(task, 'fail')
         return RETRY, None
     end = graph.build_graph().invoke(graph.new_state(task, hwnd), {'recursion_limit': 80})
     print(f'  耗时：准备+开会话 {t1 - t0:.1f} 秒，主循环 {time.time() - t1:.1f} 秒')
+    outcome = 'ok' if end['done'] else end.get('outcome') or (
+        'unknown' if any(s['result'] == '已按回车' for s in end['steps']) else 'fail')
+    journal.record(task, outcome)
     if end['done']:
         return OK, before
+    if end.get('outcome') == 'fail':
+        return RETRY, before
     # 「做」按完回车会记一条 result='已按回车'（graph.act），看它就知道消息有没有可能已经发出
     if any(s['result'] == '已按回车' for s in end['steps']):
         return UNSURE, before
@@ -298,7 +315,7 @@ def find(title,whitelist):
             return  None
 
 def pick_sessions(rows: list[dict], whitelist: list[str], pending: dict[str, int],
-                  max_retry: int = MAX_RETRY) -> tuple[list[str], int]:
+                  max_retry: int = MAX_RETRY, isolated=None) -> tuple[list[str], int]:
     """挑出这一轮要回的会话。不碰窗口，只看传进来的数据，所以能离线测。
 
     输入：
@@ -315,6 +332,7 @@ def pick_sessions(rows: list[dict], whitelist: list[str], pending: dict[str, int
          （为什么要加：角标一点就没，被 agent 自己点掉的、回失败的，都只剩账本里这一份记录）
     交回的标题用白名单里的写法，不用 OCR 读出来的写法：主循环的规矩拿它和白名单逐字比。
     """
+    isolated = set() if isolated is None else isolated
     whitelist2 = []
     unwhitelist= 0
     for row in rows:
@@ -322,19 +340,19 @@ def pick_sessions(rows: list[dict], whitelist: list[str], pending: dict[str, int
         if name is None:
             unwhitelist += 1
             continue
-        if pending.get(name,0) >= max_retry:
+        if whitelist.index(name) + 1 in isolated or pending.get(name,0) >= max_retry:
             continue
         if name in whitelist2:
             continue
         whitelist2.append(name)
     for name,count in pending.items():
-        if name not in whitelist2 and count < max_retry:
+        if name in whitelist and whitelist.index(name) + 1 not in isolated and name not in whitelist2 and count < max_retry:
             whitelist2.append(name)
     return (whitelist2,unwhitelist)
 
 
 
-def serve(hwnd: int, seconds: float) -> dict:
+def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
     """常驻 seconds 秒：有白名单好友发消息就回，回完重扫，没有了就回去盯。
 
     输出：{'replied': 回成功几个, 'unsure': 可能发了但没核对上几个, 'gave_up': 放弃了几次, 'wakes': 门铃醒了几次}
@@ -354,6 +372,8 @@ def serve(hwnd: int, seconds: float) -> dict:
       5. Ctrl+C 要能停：用 try/except KeyboardInterrupt 包住外层循环，停下时照样交回统计
     """
     # 11/7 TIBO 说“这次直接写”，由 Claude 写完整
+    isolated = set() if isolated is None else set(isolated)
+    retry_tasks = {}
     n, replied, unsure, wakes = 1, 0, 0, 0
     run = time.strftime('%H%M')          # 这次启动的时分，拼进回复里，见 make_task
     pending = {}                         # 账本 {标题: 失败次数}：扫到就记，回成功才划掉
@@ -383,7 +403,7 @@ def serve(hwnd: int, seconds: float) -> dict:
             for t in [t for t, at in gave_up_at.items() if time.time() - at > COOLDOWN]:
                 del pending[t], gave_up_at[t]
             # 第 2–7 步：看一眼 → 挑人 → 有人就回第一个，回完马上再看一眼
-            names, skipped = pick_sessions(scan(hwnd), WHITELIST, pending)
+            names, skipped = pick_sessions(scan(hwnd), WHITELIST, pending, isolated=isolated)
             if skipped:
                 print(f'  跳过 {skipped} 个非白名单会话')
             if names:
@@ -391,8 +411,12 @@ def serve(hwnd: int, seconds: float) -> dict:
                     if name not in pending:
                         pending[name] = 0
                 title = names[0]
-                task = make_task(title, n, run)
+                task = retry_tasks.get(title) or make_task(title, n, run)
                 who = WHITELIST.index(title) + 1  # 日志不写名字，写白名单第几个
+                if journal_path is not None:
+                    task.update(journal=str(journal_path), who=who)
+                    task.setdefault('id', uuid.uuid4().hex)
+                retry_tasks[title] = task
                 print(f'{time.strftime("%H:%M:%S")} 去回：白名单#{who} {task["msg"]}（还有 {len(names) - 1} 个排队）')
                 result, before = run_one(hwnd, task)
                 print(f'{ts()} 回复结束：{result}  前台={is_front(hwnd)}')
@@ -403,12 +427,16 @@ def serve(hwnd: int, seconds: float) -> dict:
                     replied += 1
                     n += 1
                     del pending[title]
+                    retry_tasks.pop(title, None)
                     watch = task         # 回了谁，开着的就是谁
                 elif result == UNSURE:   # 可能已经发了：不重试，免得发两条；编号也往后走，不重复用
                     unsure += 1
                     n += 1
                     del pending[title]
-                    print('  按过回车但核对没通过：可能已经发出，不重试，请人工看一眼')
+                    isolated.add(who)
+                    revisit.pop(title, None)
+                    retry_tasks.pop(title, None)
+                    print(f'白名单#{who} 已隔离，等人工确认')
                 elif result == HUMAN:    # 没发；情况不对，重试也一样。冷却期内不再挑它，免得一直被拒
                     pending[title] = MAX_RETRY
                     gave_up_at[title] = time.time()
@@ -523,21 +551,40 @@ def run_offline() -> None:
     assert ok_r == len(REPLY_CASES) and passed == len(CASES), '离线测试失败'
 
 
+def startup_isolated(path, clear_journal=False) -> set[int]:
+    """输入账本路径和清账选项，输出启动隔离序号；供命令行与离线测试共用。"""
+    if clear_journal:
+        journal.clear(path)
+    return journal.unresolved(path)
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
     if sys.argv[1:] == ['--offline']:
         return run_offline()
-    if len(sys.argv) != 2:
-        sys.exit('用法：python -m agent.core.trigger --offline  或  python -m agent.core.trigger 600')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('seconds', nargs='?', type=float)
+    parser.add_argument('--clear-journal', action='store_true')
+    args = parser.parse_args()
+    journal_path = Path(tempfile.gettempdir()) / 'edge-agent' / 'journal.jsonl'
+    if args.clear_journal:
+        startup_isolated(journal_path, clear_journal=True)
+        print('发送账本已清空')
+        if args.seconds is None:
+            return
+    if args.seconds is None:
+        parser.error('需要常驻秒数或 --clear-journal')
+    isolated = startup_isolated(journal_path)
+    print(f'上次有 {len(isolated)} 个会话结果不确定，已隔离')
     log_dir = Path(tempfile.gettempdir()) / 'edge-agent'
     log_dir.mkdir(exist_ok=True)
     log = log_dir / f'trigger-{datetime.now():%m%d-%H%M}.log'
     sys.stdout = Tee(log)                      # 日志不放项目里：微信相关的输出不留在仓库
     print(f'日志：{log}')
     hwnd = graph.find_wechat()
-    print(f'开始盯微信 {sys.argv[1]} 秒，Ctrl+C 停。白名单 {len(WHITELIST)} 个会话，别的会话来消息不动。')
-    stats = serve(hwnd, float(sys.argv[1]))
+    print(f'开始盯微信 {args.seconds} 秒，Ctrl+C 停。白名单 {len(WHITELIST)} 个会话，别的会话来消息不动。')
+    stats = serve(hwnd, args.seconds, isolated, journal_path)
     print(f"\n结束：回了 {stats['replied']} 个，待人工确认 {stats['unsure']} 个，放弃 {stats['gave_up']} 次，门铃醒了 {stats['wakes']} 次")
 
 

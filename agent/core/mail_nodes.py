@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from agent.core import graph                       # 复用 act、after_check、new_state、build_graph
-from agent.core.mail_check import count_subject, recipients_ok, verify_replied
+from agent.core.mail_check import count_subject, recipients_ok, judge_replied
 from agent.core.state import AgentState
 from agent.demos.baseline_loop import parse_json
 from agent.tools import activate, capture_window, chat, norm, screen_changed
@@ -286,11 +286,16 @@ def check(state: AgentState) -> dict:
             if count_subject(items, subject) > before:
                 break
             time.sleep(1)
-        ok, why = verify_replied(items, subject, before)
+        composing = read_page(state['hwnd'])
+        still_composing = (body_text(composing) == task['msg'] and
+                           any(it['kind'] == 'EditControl' and it['text'] == '主题'
+                               and it['value'] == '回复：' + task['subject'] for it in composing))
+        outcome, why = judge_replied(items, subject, before, still_composing)
+        ok = outcome == 'ok'
         print(f'核对:{why}')
         if ok:
-            return {'done':True,'failures':failures,'step_ok':True}
-        return {'failures' : failures + 1}
+            return {'done':True,'outcome':outcome,'failures':failures,'step_ok':True}
+        return {'done':False, 'outcome':outcome, 'step_ok':False, 'failures': failures + 1}
     else:
         shot = capture_window(state['hwnd'])
         if shot is None:
