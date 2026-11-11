@@ -202,23 +202,19 @@ def rules(state: AgentState) -> dict:
         return block('只能按 enter')
     # 4.2 回车只许紧跟在“这次输入、而且核对过输入框里有这句话”之后。
     #     不然输入框里原来的草稿（用户自己打的字）会被直接发出去
+    # 从后往前找最后一个"真正执行了"的步骤，被拦的跳过（被拦的 result 是拦下原因）
+    done_results = ('已点击', '已点发送', '已输入', '已按回车')
+    last = next((s for s in reversed(state['steps']) if s['result'] in done_results), None)
     if kind == 'key':
-        # 第 1 件：从后往前找最后一个"真正执行了"的步骤，被拦的跳过
-        done_results = ('已点击', '已输入', '已按回车')   # 执行了的步骤，result 是这几种之一
-        last = None
-        for s in reversed(state['steps']):
-            if s['result'] not in done_results:      # 被拦的：result 是拦下原因
-                continue                             # 跳过它，接着往前找
-            last = s
-            break                                    # 找到了，不用再往前
-
-        # 第 2 件：输入框里有没有要发的那句话。和「核对」一样比条数，不靠 CHAT_BOTTOM 的位置：
-        #   会话列表右边和这句话完全相同的条数，比聊天区气泡里的多，多出来的就在输入框里
-        right = [it for it in items if it['box'][0] > LIST_RIGHT and norm(it['text']) == norm(task['msg'])]
-        in_box = len(right) > count_msg(items, task['msg'])
-
-        if not (last and last['result'] == '已输入' and in_box):
-            return block(f'按 enter 之前必须先 type 输入“{task["msg"]}”，并且输入框里确实有这句话；输入框里原有的字不能发')
+        # 输入框里有没有这句，交给「做」里的发送许可逐字读回（D12）。
+        # 原来这里靠 OCR 数条数判断，11/10 真机同一句连着认漏 2 次，白拦；OCR 也分不清字在不在输入框里（第 20 条）
+        if not (last and last['result'] == '已输入'):
+            return block(f'按 enter 之前必须先 type 输入“{task["msg"]}”；输入框里原有的字不能发')
+    # 字已经输进去了，下一步只许 enter（或 done / fail）。
+    # 为什么不许点：点到「发送」按钮会直接发出去、绕过发送许可；识字认不出按钮时按落点也拦不住（Codex 11/10 用例 A）。
+    # 正常流程是"点输入框 → 输字 → 回车"，输完字本来就没有要点的地方
+    if kind == 'click' and last and last['result'] == '已输入':
+        return block('字已经输好了，下一步用 key enter 发送，不要再点任何地方')
     # 4.5 还没按过回车就说完成：聊天区里的同样消息是以前发的，不算
     if kind == 'done' and not any(s['action'].get('type') == 'key' and s['result'] == '已按回车'
                                   for s in state['steps']):
@@ -354,7 +350,8 @@ def check(state: AgentState) -> dict:
     step_ok = state['step_ok']
     a = state['action']
     # 转小写：规矩放行大写 ENTER，这里只认小写的话会跳过核对（Codex 11/10）
-    if (a.get('type') == 'key' and str(a.get('key', '')).lower() == 'enter') or a.get('type') == 'done':   # 回车或模型说完成：程序复查
+    pressed = bool(state['steps']) and state['steps'][-1]['result'] == '已按回车'   # 被拦下的回车没按，不用去等消息
+    if pressed or a.get('type') == 'done':   # 真按了回车或模型说完成：程序复查
         # 只看一眼会误判（回车后那一瞬标题对不上），每秒看一次，最多 5 次
         for i in range(5):
             alert = verify_sent(items, state['task'], state['count_before'])
@@ -371,12 +368,10 @@ def check(state: AgentState) -> dict:
         if not alert[0]:
             failures += 1      
     elif a.get('type') == 'type':
-        # 打字：看输入框（聊天区下面）里有没有出现这句话。只打印有没有，不打印内容
-        # 右边（会话列表以外）出现这句话的条数，比聊天区气泡里的条数多，多出来的就在输入框里
-        from agent.core.check import LIST_RIGHT
-        right = [it for it in find_text(items, state['task']['msg']) if it['box'][0] > LIST_RIGHT]
-        step_ok = len(right) > count_msg(items, state['task']['msg'])
-        print(f"  核对：输入框里{'有' if step_ok else '没有'}要发的字")
+        # 打字：「做」里 paste_text 粘完已经用剪贴板逐字读回过，记了"已输入"就是框里正好是这句。
+        # 不再用 OCR 数条数：11/10 真机会认漏，白记失败
+        step_ok = bool(state['steps']) and state['steps'][-1]['result'] == '已输入'
+        print(f"  核对：输入框里{'有' if step_ok else '没有'}要发的字（粘贴后读回）")
         if not step_ok:
             failures += 1
     else:

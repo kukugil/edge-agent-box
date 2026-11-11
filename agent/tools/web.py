@@ -159,7 +159,8 @@ def open_folder(hwnd: int, name: str = '已发送', timeout: float = 15.0) -> li
     """点左边文件夹栏里的 name（如「已发送」），等右边列表换好，交回那一页的 items。
 
     “换好”的标志：右边主体顶部出现同名的标题（x > NAV_RIGHT 且 y < 200）。
-    不会点别的东西；找不到文件夹交回空列表。
+    不会点别的东西；找不到文件夹、或者 Chrome 切不到前台，都交回空列表（一下都不点）。
+    坑（Codex 11/10）：原来没看 activate 的结果，Chrome 被挡住时会点到挡在前面的窗口上。
     """
     from .inputs import click
     from .window import activate, window_rect
@@ -167,7 +168,10 @@ def open_folder(hwnd: int, name: str = '已发送', timeout: float = 15.0) -> li
     nav = [it for it in items if it['text'] == name and it['box'][0] < NAV_RIGHT]
     if not nav:
         return []
-    activate(hwnd)
+    ok, why = activate(hwnd)
+    if not ok:
+        print(f'  打不开「{name}」：Chrome 切不到前台（{why}）')
+        return []
     l, t, _, _ = window_rect(hwnd)
     x, y = center(nav[0]['box'])
     click(l + int(x), t + int(y))

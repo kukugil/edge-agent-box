@@ -102,5 +102,36 @@ ok('被拒绝在前、之后正常 → 继续', g.after_check(S('被底层拒绝
 ok('刚输入完还没回车 → 继续', g.after_check(S('已点击', '已输入')) == 'look')
 ok('规矩拦下 → 继续（让模型换做法）', g.after_check(S('规矩拦了')) == 'look')
 ok('一步都没有 → 继续', g.after_check(S()) == 'look')
+
+# D12 收尾（11/11）：输完字只许回车；回车前不再靠 OCR 看输入框
+typed = [{'action': {'type': 'click'}, 'result': '已点击'}, {'action': {'type': 'type'}, 'result': '已输入'}]
+for name, loc in [('点在发送按钮位置、识字没认出按钮', (895, 752)), ('点在别处', (300, 300))]:
+    rr = g.rules(st({'type': 'click', 'target': '输入框'}, steps=typed, items=[], location=loc))
+    ok(f'输完字后 click（{name}）→ 拦', not rr['allow'])
+blocked_then = typed + [{'action': {'type': 'click'}, 'result': '字已经输好了…'}]
+ok('输完字、被拦一次后再 click → 还是拦', not g.rules(st({'type': 'click', 'target': 'x'}, steps=blocked_then, items=[], location=(300, 300)))['allow'])
+ok('输完字后 key enter，OCR 一个字都没认出 → 放行（交给发送许可读回）',
+   g.rules(st({'type': 'key', 'key': 'enter'}, steps=typed, items=[]))['allow'])
+ok('没输字就 key enter → 拦', not g.rules(st({'type': 'key', 'key': 'enter'}, steps=typed[:1], items=[]))['allow'])
+ok('还没输字时 click 输入框 → 放行', g.rules(st({'type': 'click', 'target': '输入框'}, steps=typed[:1], items=[], location=(300, 300)))['allow'])
+
+# 核对：被拦下的回车不去等消息；打字按读回结果算
+g.verify_sent = lambda items, task, before: (_ for _ in ()).throw(AssertionError('不该去核对'))
+g.screen_changed = lambda a, b: False
+c = g.check(st({'type': 'key', 'key': 'enter'}, steps=typed + [{'action': {}, 'result': '按 enter 之前必须先 type'}], picture=None, step_ok=False))
+ok('回车被拦下 → 不去核对聊天区', c['done'] is False)
+c = g.check(st({'type': 'type', 'text': '测试回复 1'}, steps=typed, picture=None, step_ok=False))
+ok('打字记了"已输入" → 这步算过，不靠 OCR', c['step_ok'] and c['failures'] == 0)
+
+# trigger.run_one：被拒绝、许可作废 → 交给人，不重试
+import agent.core.trigger as tr
+tr.prepare = lambda h: True
+tr.open_chat = lambda h, t: 'shot'
+for last, want in [('被底层拒绝：草稿', tr.HUMAN), ('发送许可作废：读不到输入框', tr.HUMAN),
+                   ('切前台失败：没响应', tr.RETRY), ('已按回车', tr.UNSURE)]:
+    end = {'done': False, 'steps': [{'action': {}, 'result': last}], 'step_count': 1}
+    tr.graph.build_graph = lambda nodes=None, _e=end: type('G', (), {'invoke': lambda self, s, c: _e})()
+    got, _ = tr.run_one(1, {'to': '文件传输助手', 'msg': 'x'})
+    ok(f'run_one 停在"{last[:8]}…" → {got}', got == want)
 print('全部通过' if bad == 0 else f'{bad} 个不对')
 sys.exit(1 if bad else 0)

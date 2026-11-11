@@ -137,6 +137,18 @@ for name, changed in [('收件人被改成别人', page(BAD_TO, True)),
     calls.clear(); mn.check(s)
     ok('  没点就不去「已发送」里数', ('open_folder', '已发送') not in calls)
 
+print('十、打开文件夹前 Chrome 切不到前台 → 一下都不点')
+import agent.tools.web as web
+import agent.tools.inputs as inp
+import agent.tools.window as win
+real = (web.read_page, inp.click, win.activate)
+clicks = []
+web.read_page = lambda h: [_t('已发送', 52, 305, 94, 323)]
+inp.click = lambda x, y: clicks.append((x, y))
+win.activate = lambda h: (False, '被别的窗口挡着')
+ok('切不到前台：交回空、没点', web.open_folder(1, '已发送') == [] and clicks == [])
+web.read_page, inp.click, win.activate = real
+
 g.build_graph(mn.NODES)
 ok('邮件整张图建得起来', True)
 print('全部通过' if bad == 0 else f'{bad} 条没通过')

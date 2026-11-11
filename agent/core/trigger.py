@@ -197,7 +197,10 @@ def make_task(title: str, n: int, run: str) -> dict:
     return {'to': title, 'msg': f'测试{run}回复{n}'}
 
 
-OK, RETRY, UNSURE = 'ok', 'retry', 'unsure'
+OK, RETRY, UNSURE, HUMAN = 'ok', 'retry', 'unsure', 'human'
+# 这几种停下是"情况不对"，不是"运气不好"：输入框里有用户的草稿、焦点被抢走、会话被切走。
+# 重试照样会被拒绝，白占队列（D11 实测连试 2 次都被拒），所以交给人
+HUMAN_STOPS = ('被底层拒绝', '发送许可作废')
 
 
 def prepare(hwnd: int) -> bool:
@@ -266,6 +269,7 @@ def run_one(hwnd: int, task: dict) -> tuple[str, Shot | None]:
       OK      核对通过
       RETRY   没按过回车就停了：消息肯定没发出去，可以重试
       UNSURE  按过回车但核对没通过：消息可能已经发出去了，重试会发两条，所以不重试，交给人看
+      HUMAN   没按回车，但停在"被底层拒绝"或"发送许可作废"：重试也一样，交给人看
     每次都重新确认窗口：两次回复之间可能有人动过微信，大小变了核对会不准，不响应就更不能点。
     """
     t0 = time.time()
@@ -280,6 +284,8 @@ def run_one(hwnd: int, task: dict) -> tuple[str, Shot | None]:
     # 「做」按完回车会记一条 result='已按回车'（graph.act），看它就知道消息有没有可能已经发出
     if any(s['result'] == '已按回车' for s in end['steps']):
         return UNSURE, before
+    if end['steps'] and end['steps'][-1]['result'].startswith(HUMAN_STOPS):
+        return HUMAN, before
     return RETRY, before
 
 
@@ -403,6 +409,11 @@ def serve(hwnd: int, seconds: float) -> dict:
                     n += 1
                     del pending[title]
                     print('  按过回车但核对没通过：可能已经发出，不重试，请人工看一眼')
+                elif result == HUMAN:    # 没发；情况不对，重试也一样。冷却期内不再挑它，免得一直被拒
+                    pending[title] = MAX_RETRY
+                    gave_up_at[title] = time.time()
+                    gave_up += 1
+                    print(f'  被拒绝或发送许可作废，没发出去：不重试，请人工看一眼输入框（{COOLDOWN} 秒内不再回这个会话）')
                 else:
                     pending[title] += 1  # 到 MAX_RETRY 后 pick_sessions 不再挑它，这里就不会一直转
                     later = '之后重试'
