@@ -176,7 +176,9 @@ class AnchorTests(unittest.TestCase):
         end = dict(done=False, outcome='fail', steps=[{'result': '已按回车'}])
         with tempfile.TemporaryDirectory() as tmp:
             task.update(journal=Path(tmp) / 'journal.jsonl', id='test-1', who=1)
-            with patch.object(tr, 'prepare', return_value=True), patch.object(tr, 'open_chat', return_value='fake'), \
+            # D15 起默认走固定流程；这条测的是旧主循环"按了回车但确定失败"的结果映射
+            with patch.object(tr, 'SEND_MODE', 'graph'), \
+                 patch.object(tr, 'prepare', return_value=True), patch.object(tr, 'open_chat', return_value='fake'), \
                  patch.object(g, 'build_graph') as build:
                 build.return_value.invoke.return_value = end
                 self.assertEqual(tr.run_one(1, task)[0], tr.RETRY)

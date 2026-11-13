@@ -70,11 +70,47 @@ def is_ours(item: dict, lay=DEFAULT_LAYOUT) -> bool:
     return (item['box'][0] + item['box'][2]) / 2 > (LIST_RIGHT + lay['right']) / 2
 
 
+def our_bubbles(items: list[dict], msg: str, lay) -> list[dict]:
+    # 晚导入：messages 顶上导入了本文件
+    from agent.core.messages import US, bubbles
+    return [b for b in bubbles(items, lay) if b['who'] == US and norm(b['text']) == norm(msg)]
+
+
 def count_msg(items: list[dict], msg: str, lay=DEFAULT_LAYOUT) -> int:
-    """输入 OCR、消息和布局，输出聊天区我方完全匹配的气泡数。"""
-    return sum(it['box'][0] > LIST_RIGHT and it['box'][1] > CHAT_TOP
-               and it['box'][3] < lay['bottom'] and is_ours(it, lay)
-               and norm(it['text']) == norm(msg) for it in items)
+    """输入 OCR、消息和布局，输出聊天区我方和 msg 整条一样的气泡数。
+
+    坑（D15）：原来按 OCR 的一行一个字块比，回复一折行就数不到，发成功也判"未确认"。
+    改成先拼气泡再整条比；被上沿切掉的半截气泡对不上整句，自然不算。
+    """
+    return len(our_bubbles(items, msg, lay))
+
+
+def count_ours(msgs: list[dict], msg: str) -> int:
+    """输入 read_chat 读到的消息列表和要发的话，输出我方文字消息里整条一样的条数（控件树那条路用）。"""
+    return sum(m['who'] == 'us' and m['kind'] == 'text' and norm(m['text']) == norm(msg) for m in msgs)
+
+
+def judge_sent_msgs(read: dict, task: dict, count_before: int, still_in_box=None, image=None):
+    """控件树版的发后核对。输入 read_chat 的结果（它已经核对过标题）、任务、发前条数，输出三态和原因。
+
+    和 judge_sent 一样：多出一条才算成功；旁边有红色失败标记、读不到、对不上都算 UNKNOWN，不重发。
+    """
+    if not read['ok']:
+        return UNKNOWN, '控件树没读成：' + read['reason']
+    mine = [m for m in read['msgs'] if m['who'] == 'us' and m['kind'] == 'text'
+            and norm(m['text']) == norm(task['msg'])]
+    if len(mine) > count_before:
+        if image is not None and mine[-1].get('box'):
+            from agent.tools import find_red_dots
+            x1, y1, x2, y2 = mine[-1]['box']
+            # 控件框横跨整个聊天区，失败标记在气泡左边；右边 60 是我方头像，不看
+            region = image.crop((max(0, x1), max(0, y1), max(x1 + 1, x2 - 60), min(image.height, y2)))
+            if find_red_dots(region):
+                return UNKNOWN, '这条消息旁有发送失败标记'
+        return OK, '我方消息列表多出这条（控件树整条比对）'
+    if still_in_box is True:
+        return FAIL, '输入框仍完整保留待发送文字'
+    return UNKNOWN, '未确认新的我方消息'
 
 
 def judge_sent(items, task, count_before, lay=DEFAULT_LAYOUT, still_in_box=None, image=None):
@@ -84,8 +120,7 @@ def judge_sent(items, task, count_before, lay=DEFAULT_LAYOUT, still_in_box=None,
     if count_msg(items, task['msg'], lay) > count_before:
         if image is not None:
             from agent.tools import find_red_dots
-            bubbles = [it for it in items if count_msg([it], task['msg'], lay)]
-            x1, y1, x2, y2 = max(bubbles, key=lambda it: it['box'][3])['box']
+            x1, y1, x2, y2 = max(our_bubbles(items, task['msg'], lay), key=lambda b: b['box'][3])['box']
             region = image.crop((max(0, x1 - 45), max(0, y1 - 5), x1, min(image.height, y2 + 5)))
             if find_red_dots(region):
                 return UNKNOWN, '气泡旁有发送失败标记'

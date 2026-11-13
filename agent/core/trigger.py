@@ -23,13 +23,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from agent.core import graph
+from agent.core import graph, messages, reply
 from agent.tools import journal
 from PIL import Image
 
 from agent.tools import capture_window, check_responsive, click, norm, ocr, set_window_size, activate, window_rect, Shot
-from agent.core.check import CHAT_TOP, LIST_RIGHT, chat_title, title_matches, layout, is_ours
+from agent.core.check import CHAT_TOP, LIST_RIGHT, chat_title, title_matches, layout, is_ours, our_bubbles
 from agent.tools.unread import bell_state, find_row, find_unread_rows
+from agent.tools import chat, kb, load_config
+from agent.tools.notify import notify
 
 POLL = 0.5        # 门铃每隔几秒看一眼：通过线是 5 秒内发现，0.5 秒留足余量
 MAX_RETRY = 2     # 同一个会话最多失败几次，超过就放弃，不然一个坏会话会让 agent 永远在它身上打转
@@ -90,8 +92,10 @@ NEW, NONE, UNKNOWN, OTHER = 'new', 'none', 'unknown', 'other'
 def ocr_crop(shot, box: tuple[int, int, int, int]) -> list[dict]:
     """只 OCR 截图里的一块，坐标换回整张截图。"""
     x1, y1 = box[:2]
+    # 一行字的窄条（标题条）不放大，见 ocr 的说明；聊天区这种大块照旧
+    thin = box[3] - box[1] <= 120
     return [{**it, 'box': [it['box'][0] + x1, it['box'][1] + y1, it['box'][2] + x1, it['box'][3] + y1]}
-            for it in ocr(shot.image.crop(box))]
+            for it in ocr(shot.image.crop(box), no_upscale=thin)]
 
 
 def title_box(shot) -> tuple[int, int, int, int]:
@@ -127,15 +131,84 @@ def new_after_reply(shot: Shot, items: list[dict], task: dict, lay=None) -> str:
     lay = layout(shot.image) if lay is None else lay
     if not title_matches(items, task['to']):
         return OTHER
-    chat = [it for it in items
-            if it['box'][0] > LIST_RIGHT and it['box'][1] > CHAT_TOP and it['box'][3] < lay['bottom']]
-    ours = [it for it in chat if is_ours(it, lay) and norm(it['text']) == norm(task['msg'])]
+    # D15：先拼气泡再整条比，回复折行时也认得出（原来一行一个字块比，折行就一直 UNKNOWN）
+    ours = our_bubbles(items, task['msg'], lay)
     if not ours:
         return UNKNOWN
     bottom = max(it['box'][3] for it in ours)
     below = shot.image.convert('L').crop(
         (LIST_RIGHT + 60, min(bottom + 14, lay['bottom']), LIST_RIGHT + int((lay['right'] - LIST_RIGHT) * 0.4), lay['bottom']))
     return NEW if sum(below.histogram()[:160]) > 20 else NONE
+
+
+# ---------- 文件传输助手模拟（D15，只在 --simulate 时开）----------
+# 手机发到文件传输助手的消息在电脑上显示在右边，算"我方"，程序不会回。模拟模式下：
+#   开跑时这个会话里已有的消息 + 程序自己发出去的回复 = 真正的"我方"，其余的我方消息当成"对方"。
+# 为什么要记"自己发了什么"：不记的话，程序发出去的回复也会被当成对方的新消息，自己回自己停不下来。
+# 只对名字就是"文件传输助手"的白名单会话生效，真好友的会话不受影响。
+SIM_NAME = '文件传输助手'
+SIM = {'on': False, 'known': None}      # known: Counter[(kind, text)]，算作我方的条数
+
+
+def sim_start(hwnd: int) -> str:
+    """开模拟：文件传输助手必须正开着，把现在屏上的我方消息记成"本来就有的"。输出一句说明。"""
+    from collections import Counter
+    if SIM_NAME not in WHITELIST:
+        return '白名单里没有文件传输助手，模拟没开'
+    r = messages.read_chat(hwnd, SIM_NAME)
+    if not r['ok']:
+        return f'模拟没开：先在电脑上点开文件传输助手（{r["reason"]}）'
+    SIM['on'], SIM['known'] = True, Counter((m['kind'], m['text']) for m in r['msgs'] if m['who'] == 'us')
+    return f'模拟已开：文件传输助手里现有 {sum(SIM["known"].values())} 条算作我方旧消息'
+
+
+def sim_sent(task: dict) -> None:
+    """程序往文件传输助手发了（或可能发了）一句：记成我方的。"""
+    if SIM['on'] and norm(task['to']) == norm(SIM_NAME) and task.get('msg'):
+        SIM['known'][('text', task['msg'])] += 1
+
+
+def sim_view(title: str, r: dict) -> dict:
+    """输入会话名和 read_chat 的结果，模拟开着且是文件传输助手时，把多出来的我方消息改成对方的。
+
+    同一句话出现的次数没超过"算作我方的条数"，就都还是我方；超出的那几条（最新的）算对方。
+    坑：旧消息滚出屏幕后，手机再发一句同样的话会被当成我方、不回。模拟用，接受。
+    """
+    if not (SIM['on'] and r['ok'] and norm(title) == norm(SIM_NAME)):
+        return r
+    from collections import Counter
+    seen, out = Counter(), []
+    for m in r['msgs']:
+        if m['who'] == 'us':
+            k = (m['kind'], m['text'])
+            seen[k] += 1
+            if seen[k] > SIM['known'][k]:
+                m = {**m, 'who': 'them'}
+        out.append(m)
+    return {**r, 'msgs': out}
+
+
+def read_view(hwnd: int, title: str) -> dict:
+    """read_chat，再按模拟模式改一下谁说的（模拟没开时原样交回）。"""
+    return sim_view(title, messages.read_chat(hwnd, title))
+
+
+def after_reply(hwnd: int, shot: Shot, task: dict) -> str:
+    """开着的会话里，我们的回复下面有没有新消息：控件树读得到就按控件树判，读不到再用 new_after_reply（OCR + 像素）。
+
+    输出同 new_after_reply：NEW / NONE / UNKNOWN / OTHER
+    控件树更准的地方：对方发单个字、表情包、图片都是一条，不用靠像素猜；我们的回复折行也是一整条。
+    """
+    r = read_view(hwnd, task['to'])
+    if not r['ok'] and r['reason'].startswith('标题'):
+        return OTHER
+    if r['ok'] and r['source'] == 'uia':
+        mine = [i for i, m in enumerate(r['msgs']) if m['who'] == 'us' and m['kind'] == 'text'
+                and norm(m['text']) == norm(task['msg'])]
+        if not mine:
+            return UNKNOWN
+        return NEW if any(m['who'] == 'them' for m in r['msgs'][mine[-1] + 1:]) else NONE
+    return new_after_reply(shot, chat_items(shot), task)
 
 
 # ---------- 已写好 ----------
@@ -203,7 +276,38 @@ def make_task(title: str, n: int, run: str) -> dict:
     return {'to': title, 'msg': f'测试{run}回复{n}'}
 
 
-OK, RETRY, UNSURE, HUMAN = 'ok', 'retry', 'unsure', 'human'
+OK, RETRY, UNSURE, HUMAN, SKIP = 'ok', 'retry', 'unsure', 'human', 'skip'
+# 语气例句是真实聊天，放在 git 忽略的本地文件里；没有就用 reply 里的默认语气
+TONE_FILE = Path(__file__).resolve().parent.parent / 'tone.local.json'
+TONE = json.loads(TONE_FILE.read_text(encoding='utf-8')) if TONE_FILE.exists() else []
+_CFG = load_config()
+
+
+def ask_qwen(msgs: list[dict]) -> str:
+    """输入 OpenAI 格式的 messages，输出 Qwen 的回复原文。超时设短：等太久不如这轮不回、下轮再试。"""
+    return chat(_CFG['llm_url'], _CFG['llm_model'], msgs, max_tokens=80, timeout=20)
+
+
+def decide(hwnd: int, title: str, since: float | None = None) -> dict:
+    """会话已经点开：等对方说完 → 读聊天记录 → reply.write_reply 决定发不发、发什么。
+
+    输入：since 门铃/扫描第一次看到这条新消息的时刻，等静从那时算
+    输出：write_reply 的决定 {'send', 'text', 'reason', 'pause'}，另加 'read_ok'（读消息成没成）、'source'
+    """
+    r = messages.wait_quiet(lambda: read_view(hwnd, title), since=since)
+    # 读几次、失败几次、最后一次失败原因打出来：11/12 一次读消息用了 9.9 秒，要能看出慢在哪
+    print(f"  等静：读 {r.get('reads')} 次，失败 {r.get('fails')} 次，静下来了={r.get('quiet')}，最后一次：{r['reason']}")
+    if not r['ok']:
+        return {'send': False, 'text': '', 'reason': '读消息失败：' + r['reason'], 'pause': False,
+                'read_ok': False, 'source': r['source']}
+    # 停住的会话在 serve 里就不挑了（放进 isolated），走到这里的都没停住
+    d = reply.write_reply(r['msgs'], datetime.now(), False, TONE, ask_qwen, kb.search)
+    return {**d, 'read_ok': True, 'source': r['source'], 'seen': msg_key(r['msgs'])}
+
+
+def msg_key(msgs: list[dict]) -> tuple:
+    """输入消息列表，输出能比较的样子（谁、类型、文字），用来判断聊天记录变没变。"""
+    return tuple((m['who'], m['kind'], m['text']) for m in msgs)
 # 这几种停下是"情况不对"，不是"运气不好"：输入框里有用户的草稿、焦点被抢走、会话被切走。
 # 重试照样会被拒绝，白占队列（D11 实测连试 2 次都被拒），所以交给人
 HUMAN_STOPS = ('被底层拒绝', '发送许可作废')
@@ -273,26 +377,84 @@ def left_behind(before: Shot | None, watch: dict | None, title: str) -> str | No
     return new_after_reply(before, chat_items(before), watch)
 
 
-def run_one(hwnd: int, task: dict) -> tuple[str, Shot | None]:
-    """程序点开会话，再跑一遍 D8 的主循环回它。
+# 发送方式：'flow' 固定流程（D15 方案二，默认）；'graph' 旧的看图主循环（模型每步看截图决定，留作对照和老测试）
+SEND_MODE = 'flow'
+FORCE_VISION = False     # True：固定流程也不用控件树，只用看图适配器（测兜底那条路用）
 
-    输出：(结果, 点开之前那张图)。图拿去查被切走的会话；没点成时是 None。结果三种之一（看程序核对，不看模型说的“完成”）：
+
+def run_one(hwnd: int, task: dict, since: float | None = None) -> tuple[str, Shot | None]:
+    """点开会话 → （没定回复时）读消息、写回复 → 发出去 → 程序核对。
+
+    输出：(结果, 点开之前那张图)。图拿去查被切走的会话；没点成时是 None。结果（看程序核对，不看模型说的“完成”）：
       OK      核对通过
-      RETRY   没按过回车就停了：消息肯定没发出去，可以重试
-      UNSURE  按过回车但核对没通过：消息可能已经发出去了，重试会发两条，所以不重试，交给人看
-      HUMAN   没按回车，但停在"被底层拒绝"或"发送许可作废"：重试也一样，交给人看
+      RETRY   肯定没发出去，可以重试
+      UNSURE  按过回车但核对没通过：可能已经发出去了，重试会发两条，所以不重试，交给人看
+      HUMAN   没发，但情况不对（输入框有别人的字等），重试也一样，交给人看
+      SKIP    读完消息决定不回（没有新消息等），什么都没发
+    D15：task['msg'] 是 None 时，点开会话后先读消息、让 reply 写回复；决定写进 task['msg']、task['pause']。
+      读消息失败、模型连不上算 RETRY：什么都没发。
     每次都重新确认窗口：两次回复之间可能有人动过微信，大小变了核对会不准，不响应就更不能点。
     """
     t0 = time.time()
-    before = open_chat(hwnd, task['to']) if prepare(hwnd) else None
+    if SEND_MODE == 'graph':
+        before = open_chat(hwnd, task['to']) if prepare(hwnd) else None
+        adapter = None
+    else:
+        from agent.core.send import pick_adapter
+        before = capture_window(hwnd) if prepare(hwnd) else None
+        adapter = pick_adapter(hwnd, FORCE_VISION) if before is not None else None
+        if adapter is not None and not adapter.open(task['to']):
+            print(f'  [{adapter.kind}] 没打开目标会话')
+            before = None
     t1 = time.time()
     if before is None:
-        journal.record(task, 'fail')
+        if task.get('msg'):
+            journal.record(task, 'fail')
         return RETRY, None
-    end = graph.build_graph().invoke(graph.new_state(task, hwnd), {'recursion_limit': 80})
-    print(f'  耗时：准备+开会话 {t1 - t0:.1f} 秒，主循环 {time.time() - t1:.1f} 秒')
-    outcome = 'ok' if end['done'] else end.get('outcome') or (
-        'unknown' if any(s['result'] == '已按回车' for s in end['steps']) else 'fail')
+    if task.get('msg') is None:
+        d = decide(hwnd, task['to'], since)
+        print(f"  读消息（{d['source'] or '无'}）+ 决定 {time.time() - t1:.1f} 秒："
+              f"{'发「' + d['text'] + '」' if d['send'] else '不发'}，{d['reason']}")
+        # 读消息失败、模型连不上：什么都没发，下一轮再试。不能算 SKIP：SKIP 会记下这屏消息，
+        # 聊天记录不变就不再回，模型恢复了也不会回（11/12 真机 Qwen 掉线时碰到）
+        if not d['read_ok'] or d['reason'].startswith('模型调用失败'):
+            return RETRY, before
+        if not d['send']:
+            task['seen'] = d.get('seen')
+            return SKIP, before
+        task['msg'], task['pause'], task['reason'] = d['text'], d['pause'], d['reason']
+        t1 = time.time()
+    if adapter is None:
+        return _run_graph(hwnd, task, before, t0, t1)
+    from agent.core.send import deliver
+    try:
+        result, why = deliver(adapter, task)
+    except Exception as e:
+        # 说不清回车按没按过：按"可能发了"处理，隔离、不重试，交给人看
+        print(f'  发送流程出错（{type(e).__name__}），按可能已发处理，交给人看')
+        journal.record(task, 'unknown')
+        return UNSURE, before
+    task['why'] = why
+    print(f'  发送：{result}，{why}；耗时 准备+开会话+读消息写回复 {t1 - t0:.1f} 秒，发送 {time.time() - t1:.1f} 秒')
+    return result, before
+
+
+def _run_graph(hwnd: int, task: dict, before, t0: float, t1: float) -> tuple[str, Shot | None]:
+    """旧的看图主循环（SEND_MODE='graph'）：模型每步看截图决定下一步。"""
+    try:
+        end = graph.build_graph().invoke(graph.new_state(task, hwnd), {'recursion_limit': 80})
+    except Exception as e:
+        # 11/12 真机：定位服务断开，异常一路冒上来把常驻整个带崩。
+        # 说不清回车按没按过，按"可能发了"处理：隔离、不重试，交给人看
+        print(f'  主循环出错（{type(e).__name__}），按可能已发处理，交给人看')
+        journal.record(task, 'unknown')
+        return UNSURE, before
+    print(f'  耗时：准备+开会话+读消息写回复 {t1 - t0:.1f} 秒，主循环 {time.time() - t1:.1f} 秒')
+    task['why'] = end['steps'][-1]['result'] if end['steps'] else ''   # 停在哪一步，通知里告诉人
+    # 坑（11/12 真机）：模型说"完成"时核对会给出 unknown，可回车根本没按过，也照记 unknown，
+    # 下次启动账本把这个会话当"可能已发"一直隔离，再也不回。没按过回车就一定没发，记 fail
+    pressed = any(s['result'] == '已按回车' for s in end['steps'])
+    outcome = 'ok' if end['done'] else (end.get('outcome') or 'unknown') if pressed else 'fail'
     journal.record(task, outcome)
     if end['done']:
         return OK, before
@@ -380,6 +542,7 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
     gave_up_at = {}                      # {标题: 放弃的时刻}：过了 COOLDOWN 秒就从账本里划掉，再有角标会重新挑它
     gave_up = 0
     watch = None                         # 最近回过的任务：它的会话一直开着，要盯聊天区
+    skip_seen = {}                       # {标题: 判"不回"时读到的聊天记录}：没变就不再去点它（11/12 真机每 7 秒点一次）
     revisit = {}                         # {标题: 回过的任务}：切走时没查清的会话，都回完了再挨个点开查（TIBO 11/9 的主意）
     start = time.time()
 
@@ -404,6 +567,7 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                 del pending[t], gave_up_at[t]
             # 第 2–7 步：看一眼 → 挑人 → 有人就回第一个，回完马上再看一眼
             names, skipped = pick_sessions(scan(hwnd), WHITELIST, pending, isolated=isolated)
+            found_at = time.time()       # 角标已经在了，说明消息在这之前就到了：等静从这里算
             if skipped:
                 print(f'  跳过 {skipped} 个非白名单会话')
             if names:
@@ -411,19 +575,33 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                     if name not in pending:
                         pending[name] = 0
                 title = names[0]
-                task = retry_tasks.get(title) or make_task(title, n, run)
+                task = retry_tasks.get(title) or {'to': title}
+                # 走到这里的旧任务都没发出去（发了或可能发了的已经划掉），回复要按最新的聊天重新写
+                task['msg'], task['pause'] = None, False
                 who = WHITELIST.index(title) + 1  # 日志不写名字，写白名单第几个
                 if journal_path is not None:
                     task.update(journal=str(journal_path), who=who)
                     task.setdefault('id', uuid.uuid4().hex)
                 retry_tasks[title] = task
-                print(f'{time.strftime("%H:%M:%S")} 去回：白名单#{who} {task["msg"]}（还有 {len(names) - 1} 个排队）')
-                result, before = run_one(hwnd, task)
+                print(f'{time.strftime("%H:%M:%S")} 去回：白名单#{who}（还有 {len(names) - 1} 个排队）')
+                result, before = run_one(hwnd, task, since=found_at)
                 print(f'{ts()} 回复结束：{result}  前台={is_front(hwnd)}')
                 note_left(before, title)
                 if before is not None:   # 已经切到这个会话，原来盯的那个交给账本或 revisit 了
                     watch = None
-                if result == OK:
+                if result in (OK, UNSURE):
+                    sim_sent(task)
+                if task.get('pause') and result in (OK, UNSURE):
+                    # 转人工：「正在忙」只发一次，这次运行里不再回这个会话（借鉴 Rasa/Botpress：转人工是终点）
+                    isolated.add(who)
+                    print(f'  白名单#{who} 已转人工，这次运行不再自动回它')
+                    notify('端侧助手：转人工', f'白名单#{who}：{task.get("reason") or "需要你本人回复"}。'
+                           f'已回对方一句稍后回复，这次运行不再自动回，请你接手')
+                if result == SKIP:
+                    del pending[title]
+                    retry_tasks.pop(title, None)
+                    skip_seen[title] = task.get('seen')
+                elif result == OK:
                     replied += 1
                     n += 1
                     del pending[title]
@@ -437,11 +615,16 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                     revisit.pop(title, None)
                     retry_tasks.pop(title, None)
                     print(f'白名单#{who} 已隔离，等人工确认')
+                    if not task.get('pause'):        # 转人工那条上面已经通知过
+                        notify('端侧助手：请确认是否发出', f'白名单#{who}：按过回车但没核对上，可能已经发出。'
+                               f'已停止自动回这个会话，请看一眼聊天记录')
                 elif result == HUMAN:    # 没发；情况不对，重试也一样。冷却期内不再挑它，免得一直被拒
                     pending[title] = MAX_RETRY
                     gave_up_at[title] = time.time()
                     gave_up += 1
                     print(f'  被拒绝或发送许可作废，没发出去：不重试，请人工看一眼输入框（{COOLDOWN} 秒内不再回这个会话）')
+                    notify('端侧助手：没发出去，需要你看一眼', f'白名单#{who}：{task.get("why", "")[:120]}。'
+                           f'{COOLDOWN} 秒内不再自动回这个会话')
                 else:
                     pending[title] += 1  # 到 MAX_RETRY 后 pick_sessions 不再挑它，这里就不会一直转
                     later = '之后重试'
@@ -459,7 +642,7 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                 if before is not None:
                     note_left(before, title)
                     shot = capture_window(hwnd)
-                    seen = new_after_reply(shot, chat_items(shot), task)
+                    seen = after_reply(hwnd, shot, task)
                     print(f'{ts()} 回头查 白名单#{WHITELIST.index(title) + 1}：{seen}')
                     watch = task
                     if seen == NEW:
@@ -469,9 +652,18 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
 
             # 开着的会话：不靠角标，看我们的回复下面有没有东西
             chat = None
+            open_wl = None
+            if watch is None:
+                # 11/12 真机：好友会话本来就开着，来消息不出角标，前两分钟发的都没发现。
+                # 开着的是白名单会话（没隔离）就也盯聊天区，一变就去读一遍；没有新消息 reply 会判不回
+                cur = capture_window(hwnd)
+                t = open_title(cur) if cur is not None else ''
+                hit = next((w for w in WHITELIST if t and norm(t) == norm(w)), None)
+                if hit and WHITELIST.index(hit) + 1 not in isolated:
+                    open_wl, chat = hit, chat_sig(cur)
             shot = capture_window(hwnd) if watch else None
             if shot:
-                seen = new_after_reply(shot, chat_items(shot), watch)
+                seen = after_reply(hwnd, shot, watch)
                 print(f'{ts()} 查回复下面：{seen}')
                 if seen == NEW:              # 放回账本，回到扫描那一步再回一次
                     pending[watch['to']] = 0
@@ -486,6 +678,11 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
             last, why = wait_for_change(hwnd, last, left(), chat)
             if why:
                 wakes += 1
+            if why == 'chat' and open_wl:
+                # 先不点，直接读一遍（会话本来就开着）：和上次判"不回"时一样，就当没变
+                r = read_view(hwnd, open_wl)
+                if not (r['ok'] and skip_seen.get(open_wl) == msg_key(r['msgs'])):
+                    pending.setdefault(open_wl, 0)
     except KeyboardInterrupt:            # Ctrl+C：不报错，照样交回统计
         print('\n按了 Ctrl+C，停下')
 
@@ -566,6 +763,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('seconds', nargs='?', type=float)
     parser.add_argument('--clear-journal', action='store_true')
+    parser.add_argument('--simulate', action='store_true', help='文件传输助手模拟：手机发来的当成对方的')
+    parser.add_argument('--vision', action='store_true', help='发送只用看图适配器（测兜底那条路）')
+    parser.add_argument('--graph', action='store_true', help='用旧的看图主循环发送（对照用）')
     args = parser.parse_args()
     journal_path = Path(tempfile.gettempdir()) / 'edge-agent' / 'journal.jsonl'
     if args.clear_journal:
@@ -583,6 +783,14 @@ def main():
     sys.stdout = Tee(log)                      # 日志不放项目里：微信相关的输出不留在仓库
     print(f'日志：{log}')
     hwnd = graph.find_wechat()
+    global SEND_MODE, FORCE_VISION
+    SEND_MODE = 'graph' if args.graph else 'flow'
+    FORCE_VISION = args.vision
+    print(f"发送方式：{'旧主循环' if args.graph else '固定流程'}，适配器：{'只看图' if args.vision else '控件树优先'}")
+    if args.simulate:
+        print(sim_start(hwnd))
+        if not SIM['on']:
+            return
     print(f'开始盯微信 {args.seconds} 秒，Ctrl+C 停。白名单 {len(WHITELIST)} 个会话，别的会话来消息不动。')
     stats = serve(hwnd, args.seconds, isolated, journal_path)
     print(f"\n结束：回了 {stats['replied']} 个，待人工确认 {stats['unsure']} 个，放弃 {stats['gave_up']} 次，门铃醒了 {stats['wakes']} 次")

@@ -18,7 +18,9 @@ from pathlib import Path
 
 from langgraph.graph import StateGraph, START, END
 
-from agent.core.check import LIST_RIGHT, chat_title, title_matches, count_msg, judge_sent, layout, OK, UNKNOWN
+from agent.core.check import (LIST_RIGHT, chat_title, title_matches, count_msg, count_ours, judge_sent,
+                              judge_sent_msgs, layout, OK, UNKNOWN)
+from agent.core.messages import read_chat
 from agent.core.state import AgentState
 from agent.tools import journal
 from agent.demos.baseline_loop import in_web_suggestions, parse_json  # 微信界面知识先借用，D11 挪进应用配置
@@ -90,10 +92,26 @@ def look(state: AgentState) -> dict:
     if shot is None:
         sys.exit('截图失败')
     items = ocr(shot.image)
+    # 标题条单独裁出来再认一遍，替换整张图里的标题字块：整张一起认时标题时好时坏
+    # （11/11 连拦 6 次、11/12 回车前连拦 2 次"标题读不清"），trigger 开会话一直是裁开认的，没出过错
+    from agent.core.trigger import ocr_crop, title_box
+    from agent.core.check import TITLE_TOP, TITLE_BOTTOM
+    items = [it for it in items if not (it['box'][0] > LIST_RIGHT and it['box'][1] > TITLE_TOP
+                                        and it['box'][3] < TITLE_BOTTOM)] + ocr_crop(shot, title_box(shot))
     out = {'picture': shot.image, 'items': items}
     # 发之前的条数只在还没按过回车时数：按过以后再数，刚发的那条会被算进“之前”
     if not any(s['result'] == '已按回车' for s in state['steps']):
-        out['count_before'] = count_msg(items, state['task']['msg'], layout(shot.image))
+        # D15：控件树读得到就用控件树数（整条比、不怕折行和认错字），只在第一圈读一次：
+        # 我方的同一句话只会因为我们自己按回车而变多，不用每圈重读（每次读要 1 秒左右）。
+        # 发前用哪条路数，发后就用哪条路核对，两边不能混
+        if not state.get('count_src'):
+            r = read_chat(state['hwnd'], state['task']['to'])
+            if r['ok'] and r['source'] == 'uia':
+                out.update(count_before=count_ours(r['msgs'], state['task']['msg']), count_src='uia')
+            else:
+                out['count_src'] = 'ocr'
+        if out.get('count_src', state.get('count_src')) == 'ocr':
+            out['count_before'] = count_msg(items, state['task']['msg'], layout(shot.image))
     return out
 
 def think(state: AgentState) -> dict:
@@ -152,9 +170,14 @@ def locate(state: AgentState) -> dict:
     if state['action'].get('type') != 'click':
         return {'location':[]}
     target = state['action'].get('target','')
-    pt,raw = ground(state['picture'], target,           # 把截图和描述交给 UI-TARS
-                     CFG['grounder_url'], CFG['grounder_model'],
-                     CFG['grounder_max_pixels'])
+    try:
+        pt,raw = ground(state['picture'], target,           # 把截图和描述交给 UI-TARS
+                         CFG['grounder_url'], CFG['grounder_model'],
+                         CFG['grounder_max_pixels'])
+    except OSError as e:
+        # 11/12 真机：UI-TARS 服务没起，连接被重置，整个常驻直接崩了。当成"没找到"，这一步不点
+        print(f'  定位服务连不上（{type(e).__name__}），这一步不点')
+        return {'location': []}
     if pt is None:
         return {'location': []}
     pt, note = snap_to_text(state['items'], target, pt)
@@ -195,6 +218,11 @@ def rules(state: AgentState) -> dict:
     #    读不清和对不上分开报：11/11 真机有一轮连拦 6 次，没法区分是 OCR 可信度不够（<0.9、带省略号）还是真切走了
     if kind in ('type', 'key') and not title_matches(items, task['to']):
         if not chat_title(items):
+            # 只打印字数、把握和有没有省略号，不打印标题本身（可能是人名）
+            band = [it for it in items if it['box'][0] > LIST_RIGHT and it['box'][1] > 30 and it['box'][3] < 85]
+            print(f"  标题读不清：{len(band)} 个字块，字数 {[len(it['text']) for it in band]}，"
+                  f"把握 {[round(it.get('score', 0), 2) for it in band]}，"
+                  f"省略号 {any(it['text'].endswith(('…', '...')) for it in band)}")
             return block('会话标题读不清（可能被遮住或识别不稳），先别输入；稍等再看一眼')
         return block('当前会话不是目标会话，先在左侧会话列表点开目标')
     # 3. 打的字必须就是要发的那句，不许模型自己编
@@ -247,6 +275,45 @@ def rules(state: AgentState) -> dict:
 ACTION_TYPES = ('click', 'type', 'key', 'done', 'fail')
 
 
+def title_items(shot) -> list[dict]:
+    """输入窗口截图，输出只裁标题条认出来的字块（坐标是整张图的）。单独成函数，离线测试好替换。"""
+    from agent.core.trigger import ocr_crop, title_box     # 晚导入：trigger 导入了本文件
+    return ocr_crop(shot, title_box(shot))
+
+
+def wechat_focus(hwnd: int) -> tuple[bool, str]:
+    """粘贴、回车之前：前台必须是微信主窗口本身，焦点必须在聊天输入框。不在就由程序点一下输入框，再查一次。
+
+    输出：(行不行, 不行时的原因)
+    为什么要单独查：activate 把"微信进程的任何窗口在前台"都算成功（为了不关掉邮件的下拉框），
+      11/12 真机常驻里多次出现"微信拉不到前台：已在前台"，前台其实是微信的另一个小窗口，
+      那时按键落不到聊天输入框，粘贴读回是空的。
+    控件树读不到焦点（屏幕阅读器标志没开）时只查前台，不挡。
+    """
+    import ctypes
+    import uiautomation as auto
+    u32 = ctypes.windll.user32
+    aid = None
+    for attempt in range(2):
+        fg_main = u32.GetForegroundWindow() == hwnd
+        try:
+            aid = auto.GetFocusedControl().AutomationId or ''
+        except Exception:
+            aid = None
+        if fg_main and aid in ('chat_input_field', None):
+            return True, ''
+        if attempt == 0:
+            u32.SetForegroundWindow(hwnd)
+            shot = capture_window(hwnd)
+            if shot is None:
+                break
+            lay = layout(shot.image)
+            # 和 trigger.open_chat 点的是同一个位置：分隔线下 50 像素、聊天区正中
+            click(*shot.to_screen((LIST_RIGHT + lay['right']) // 2, lay['bottom'] + 60))
+            time.sleep(0.3)
+    return False, f'前台不是微信主窗口或焦点不在聊天输入框（主窗口在前台={fg_main}）'
+
+
 def send_permit(state: AgentState) -> tuple[bool, str]:
     """发送许可：按回车前的最后一刻再查一遍，查过马上按，中间不做别的。
 
@@ -263,8 +330,13 @@ def send_permit(state: AgentState) -> tuple[bool, str]:
     shot = capture_window(state['hwnd'])
     if shot is None:
         return False, '截不到微信画面'
-    if not title_matches(ocr(shot.image), task['to']):
+    # 标题条裁开认（同 look）：11/12 真机这里用整张图认，标题明明没变也判"不是目标"，作废了发送许可
+    if not title_matches(title_items(shot), task['to']):
         return False, '当前会话标题已经不是目标'
+    if task.get('app') != 'mail':
+        ok, why = wechat_focus(state['hwnd'])
+        if not ok:
+            return False, why
     back = read_focused_text()
     if back != task['msg']:
         return False, '读不到输入框（焦点可能被抢走）' if back == '' else '输入框里不正好是这句'
@@ -311,8 +383,12 @@ def act(state: AgentState) -> dict:
                     result = '已点发送' if sent else '已点击'
                 elif kind == 'type':
                     mode = 'replace' if state['task'].get('app') == 'mail' else 'empty_only'
-                    paste_text(a.get('text', ''), mode=mode)
-                    result = '已输入'
+                    ok, why = (True, '') if mode == 'replace' else wechat_focus(state['hwnd'])
+                    if ok:
+                        paste_text(a.get('text', ''), mode=mode)
+                        result = '已输入'
+                    else:
+                        result = '被底层拒绝：' + why
                 elif kind != 'key':                  # 规矩已经拦了；这里再兜一次底，绝不落到按回车
                     result = f'不认识的动作 {kind!r}，没动键鼠'
                 elif str(a.get('key', '')).lower() != 'enter':
@@ -341,7 +417,8 @@ def check(state: AgentState) -> dict:
     普通步骤保留画面变化检查，输入步骤以粘贴后的读回结果为准。
     """
     shot = capture_window(state['hwnd'])
-    items = ocr(shot.image) if shot is not None else []
+    # 整张图 OCR 要 1.3–1.8 秒，只有走 OCR 核对发送时才用得上；打字、点击、控件树核对都不用，就不认（11/12 提速）
+    ocr_send = state.get('count_src') != 'uia'
     failures = state['failures']
     done = state['done']
     step_ok = state['step_ok']
@@ -350,6 +427,23 @@ def check(state: AgentState) -> dict:
     pressed = bool(state['steps']) and state['steps'][-1]['result'] == '已按回车'   # 被拦下的回车没按，不用去等消息
     if pressed or a.get('type') == 'done':   # 真按了回车或模型说完成：程序复查
         outcome, why = UNKNOWN, '未取得可核对的截图'
+        if state.get('count_src') == 'uia':
+            for i in range(5):
+                r = read_chat(state['hwnd'], state['task']['to'])
+                shot = capture_window(state['hwnd'])
+                outcome, why = judge_sent_msgs(r, state['task'], state['count_before'],
+                                               image=shot.image if shot is not None else None)
+                if outcome == OK or i == 4:
+                    break
+                time.sleep(1)
+            if outcome != OK:
+                back = read_focused_text()
+                outcome, why = judge_sent_msgs(r, state['task'], state['count_before'],
+                                               still_in_box=(back == state['task']['msg']))
+            print(why)
+            done = outcome == OK
+            return {'done': done, 'outcome': outcome, 'failures': failures + (not done), 'step_ok': done}
+        items = ocr(shot.image) if shot is not None and ocr_send else []
         for i in range(5):
             if shot is not None:
                 outcome, why = judge_sent(items, state['task'], state['count_before'],
@@ -432,7 +526,7 @@ def new_state(task: dict, hwnd: int) -> AgentState:
     """开头的状态：15 个键都要有值，节点读不到键会报 KeyError。"""
     return {'task': task, 'steps': [], 'step_count': 0, 'failures': 0,
             'picture': None, 'action': {}, 'location': [], 'hit': '', 'allow': False, 'outcome': '', 'done': False,'step_ok': False,
-            'hwnd': hwnd, 'count_before': 0, 'top_before': [], 'items': [], 'block_reason': ''}
+            'hwnd': hwnd, 'count_before': 0, 'count_src': '', 'top_before': [], 'items': [], 'block_reason': ''}
 
 
 WIN_SIZE = (960, 800)   # check.py 里那几条坐标线是按这个大小量的，开跑前把窗口设成它

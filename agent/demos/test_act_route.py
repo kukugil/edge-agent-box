@@ -17,6 +17,8 @@ g.paste_text = lambda t, mode='empty_only': calls.append(('paste', t, mode))
 desk = {'title': '文件传输助手', 'box': '测试回复 1'}
 g.capture_window = lambda h: type('Shot', (), {'image': None})()
 g.ocr = lambda img: []
+g.wechat_focus = lambda h: (True, '')   # D15：前台和焦点核对要真窗口，离线测试里当它通过
+g.title_items = lambda shot: []   # D15：发送许可改成裁标题条认，标题对不对仍由下面的 title_matches 假装
 g.title_matches = lambda items, name: desk['title'] == name
 g.journal.record = lambda task, status: None
 g.read_focused_text = lambda: desk['box']
@@ -127,6 +129,7 @@ ok('打字记了"已输入" → 这步算过，不靠 OCR', c['step_ok'] and c['
 # trigger.run_one：被拒绝、许可作废 → 交给人，不重试
 import agent.core.trigger as tr
 tr.prepare = lambda h: True
+tr.SEND_MODE = 'graph'   # D15 起默认走固定流程，这几条测的是旧主循环的结果映射
 tr.open_chat = lambda h, t: 'shot'
 for last, want in [('被底层拒绝：草稿', tr.HUMAN), ('发送许可作废：读不到输入框', tr.HUMAN),
                    ('切前台失败：没响应', tr.RETRY), ('已按回车', tr.UNSURE)]:
