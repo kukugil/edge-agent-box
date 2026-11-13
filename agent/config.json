@@ -5,5 +5,6 @@
   "vlm_model": "qwen38-27b",
   "grounder_url": "http://192.168.10.106:30015/v1",
   "grounder_model": "ui-tars-1.5-7b-awq",
-  "grounder_max_pixels": 1003520
+  "grounder_max_pixels": 1003520,
+  "reply_mode": "free"
 }

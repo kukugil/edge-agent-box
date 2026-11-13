@@ -285,7 +285,8 @@ _CFG = load_config()
 
 def ask_qwen(msgs: list[dict]) -> str:
     """输入 OpenAI 格式的 messages，输出 Qwen 的回复原文。超时设短：等太久不如这轮不回、下轮再试。"""
-    return chat(_CFG['llm_url'], _CFG['llm_model'], msgs, max_tokens=80, timeout=20)
+    # 自由回复会有长回答（默写、数学题），80 个 token 会被截断；300 够写一段
+    return chat(_CFG['llm_url'], _CFG['llm_model'], msgs, max_tokens=300, timeout=30)
 
 
 def decide(hwnd: int, title: str, since: float | None = None) -> dict:
@@ -301,7 +302,11 @@ def decide(hwnd: int, title: str, since: float | None = None) -> dict:
         return {'send': False, 'text': '', 'reason': '读消息失败：' + r['reason'], 'pause': False,
                 'read_ok': False, 'source': r['source']}
     # 停住的会话在 serve 里就不挑了（放进 isolated），走到这里的都没停住
-    d = reply.write_reply(r['msgs'], datetime.now(), False, TONE, ask_qwen, kb.search)
+    # reply_mode：'free' 临时自由回复（11/13 用户要求，先不分流）；'tiers' 三档分流（方案 A）
+    if load_config().get('reply_mode', 'tiers') == 'free':
+        d = reply.write_reply_free(r['msgs'], datetime.now(), TONE, ask_qwen)
+    else:
+        d = reply.write_reply(r['msgs'], datetime.now(), False, TONE, ask_qwen, kb.search)
     return {**d, 'read_ok': True, 'source': r['source'], 'seen': msg_key(r['msgs'])}
 
 

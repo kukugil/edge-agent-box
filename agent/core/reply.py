@@ -380,3 +380,50 @@ def hold_reply(msgs: list[dict]) -> str:
     """输入聊天记录，输出一句"不确定档"的固定回复：挑一句我方最近三条里没用过的，免得连着发一样的话。"""
     recent = [m['text'] for m in msgs if m['who'] == 'us'][-3:]
     return next((h for h in HOLD_REPLIES if h not in recent), HOLD_REPLIES[0])
+
+
+# ---------- 临时：自由回复（11/13 用户要求，先不分流）----------
+# 用户实测三档分流太严："默写滕王阁序""你能给电脑关机了吗"这类常见问答都被回成兜底话术。
+# 临时版本只给模型语气，其余全交给模型；分流那套（write_reply）留着，config.json 的 reply_mode 改回 "tiers" 就切回去。
+# 风险（已告知用户）：模型可能替我答应借钱、编造时间地点，也会照对方的要求改说话方式。
+FREE_PROMPT = """\
+你在替我回微信。根据聊天记录，用我的语气写我要回的下一句。
+只输出回复本身，不加引号、前缀或解释。
+
+{tone}
+"""
+_PLACEHOLDER = {'sticker': '[表情包]', 'image': '[图片]', 'voice': '[语音]', 'file': '[文件]'}
+
+
+def _line(msg: dict) -> str:
+    # 非文字消息给模型一个占位，让它知道对方发了什么，而不是看到"动画表情"四个字去回
+    return msg['text'] if msg['kind'] == 'text' else _PLACEHOLDER.get(msg['kind'], '[其他消息]')
+
+
+def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask) -> dict:
+    """自由回复：对方有新消息就交给模型写一句，不分档、不拦话题。
+
+    输入：msgs 聊天记录；now 当前时间；tone 语气例句；ask 调模型的函数
+    输出：和 write_reply 同样的字典（tier 固定 'free'，pause/notify 固定 False）
+    只做发送必需的整理：去掉首尾空白和包住整句的引号，换行改成空格（换行会把输入框变成多行草稿）。
+    """
+    context, new = split_new(msgs, now)
+    if not new:
+        return {'send': False, 'text': '', 'reason': '没有新消息', 'pause': False, 'tier': 'skip', 'notify': False}
+    tone_text = (TONE_HEAD + '\n'.join(tone)) if tone else TONE_DEFAULT
+    history = '\n'.join(f"{'我' if m['who'] == 'us' else '对方'}:{_line(m)}" for m in context) or '（无）'
+    user = f"【之前的聊天】\n{history}\n\n【对方消息】\n" + '\n'.join(_line(m) for m in new)
+    messages = [{'role': 'system', 'content': FREE_PROMPT.format(tone=tone_text)},
+                {'role': 'user', 'content': user}]
+    try:
+        text = (ask(messages) or '').strip()
+    except Exception as e:
+        return {'send': False, 'text': '', 'reason': f'模型调用失败：{type(e).__name__}',
+                'pause': False, 'tier': 'error', 'notify': False}
+    for left, right in (('"', '"'), ('“', '”'), ("'", "'"), ('‘', '’')):
+        if len(text) > 1 and text.startswith(left) and text.endswith(right):
+            text = text[1:-1].strip()
+    text = ' '.join(t.strip() for t in text.splitlines() if t.strip())
+    if not text:
+        return {'send': False, 'text': '', 'reason': '模型写了空回复', 'pause': False, 'tier': 'error', 'notify': False}
+    return {'send': True, 'text': text, 'reason': '自由回复', 'pause': False, 'tier': 'free', 'notify': False}
