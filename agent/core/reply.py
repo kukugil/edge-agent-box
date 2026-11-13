@@ -6,7 +6,7 @@ graph 里的 rules 要求输入的字和 task['msg'] 一字不差，所以回复
 借鉴的 4 条（11/11 读 5 个项目）：
   1. 先分流再生成：图片、语音、文件、已停住的会话，不调模型          → route
   2. 多层防线：提示词管怎么说 + 写完再查（结合对方的问题查）+ 不过就重写 → SYSTEM_PROMPT / check_reply
-  3. 转人工是终点：只发一次"正在忙"，之后这个会话停住，不再自动回        → write_reply 的 pause
+  3. 转人工：方案 A（11/13）起不停住会话，高风险每次回固定话术并通知本人 → write_reply 的 notify
   4. 连发合并：等对方停几秒再回（wait_quiet 在工具层，不在这里）
 
 本文件不碰窗口、不调键鼠，全是纯函数：输入聊天记录，输出决定。所以能离线拿假对话测。
@@ -21,10 +21,18 @@ from datetime import datetime, timedelta
 
 CONTEXT_N = 6                       # 旧消息最多带几条（11/11 定：五六句）
 MAX_AGE = timedelta(hours=1)        # 超过这么久的旧消息不带，免得把旧话题当成现在的（建议值，可改）
-MAX_TRIES = 3                       # 第一次 + 重写两次，都不过就转人工
-BUSY = '正在忙，稍后回复您'
+MAX_TRIES = 3                       # 第一次 + 重写两次，都不过就按高风险回
+BUSY = '正在忙，稍后回复您'          # 高风险档的固定话术（11/12 用户定：保持原样）
 STICKER_REPLY = '怎么啦？'
-HUMAN = '转人工'                     # 模型判断该转人工时只输出这三个字
+HUMAN = '转人工'                     # 模型判断是高风险时只输出这三个字
+UNSURE = '待确认'                    # 模型判断要我本人才知道的事实时只输出这三个字
+# 方案 A（11/13 用户选）：对方发什么都回一句，不再停住会话。分三档：
+#   正常   模型照常写
+#   不确定 问我的时间、地点、行程、有没有空这类没资料的事实，或发来图片语音文件：
+#          回一句不给事实、不做承诺的话（下面这些固定句，轮着用，不交给模型自由写，免得它顺手编事实）
+#   高风险 借钱、转账、验证码、合同、要我答应办事：固定回 BUSY，并通知本人；不交给模型写
+HOLD_REPLIES = ('我看一下再跟你说', '这个我晚点确认下回你', '稍等，我看下再回你')
+MEDIA_REPLIES = {'image': '图片我等下看', 'voice': '语音我等下听', 'file': '我等下看看'}
 
 
 def split_new(msgs: list[dict], now: datetime,
@@ -70,8 +78,8 @@ def route(new: list[dict], paused: bool) -> tuple[str, str]:
 
     输入：new 是 split_new 给的新消息；paused 表示这个会话已经转过人工。
     输出：(去向, 原因)，去向是下面四个之一
-      'skip'    不回：没有新消息，或会话已停住（停住后不再发任何东西，包括"正在忙"）
-      'human'   转人工：新消息里有图片、语音、文件
+      'skip'    不回：没有新消息，或会话已停住（方案 A 起 serve 不再传 paused=True，留着兼容）
+      'media'   新消息里有图片、语音、文件：按类型回一句固定的"等下看"（不确定档）
       'sticker' 只有表情包、没有文字：回 STICKER_REPLY
       'write'   有文字：调模型写（表情包混在文字里时，只回文字）
     """
@@ -87,7 +95,7 @@ def route(new: list[dict], paused: bool) -> tuple[str, str]:
 
     for msg in new:
         if msg['kind'] in ('voice', 'image', 'file'):
-            return ('human', '新消息包含图片、语音或文件')
+            return ('media:' + msg['kind'], '新消息包含图片、语音或文件')
 
         if msg['kind'] == 'text':
             has_text = True
@@ -103,23 +111,25 @@ def route(new: list[dict], paused: bool) -> tuple[str, str]:
 # 坑（demo_reply 实测）：规矩写太松会替你答应事情，写太紧连"收到"都转人工，改完要拿固定测试集量。
 SYSTEM_PROMPT = """\
   你是我的聊天回复助手，根据提供的聊天记录拟写回复。
-护栏（哪些事不替我回，只输出 {human}）
-- 对方要求借钱、转账或提供验证码时，只输出 {human}。
-- 对方要求我作出承诺，但资料不足以判断时，只输出 {human}。
-- 对方需要我提供任何东西，或者确认某个事实的时候，输出{human}。
-- 不编造我的日程、位置、价格或其他事实。
+护栏（哪些事不替我回）
+- 对方要借钱、转账、垫钱、要验证码或密码、谈合同签字、要我答应替他办事时，只输出：{human}
+- 对方问只有我本人才知道的事实（我的时间安排、在哪、到没到、有没有空、价格、日期、数字），
+  聊天记录和资料里又没有答案时，只输出：{unsure}
+- 不编造我的日程、位置、价格或其他事实，也不替我答应任何事。
 
 回复准则（长度、口语、不用表情、只输出回复本身）
 - 使用简短、自然的中文口语，通常一到两句。
 - 不使用表情符号。
 - 只输出要发送的回复正文，不加引号、前缀或解释。
-- 需要转人工时，只输出 {human}，不附加其他文字。
+- 输出 {human} 或 {unsure} 时，只输出这三个字，不附加其他文字。
 
 场景（对方在问时间地点价格怎么办、对方只打招呼怎么办……）
 - 对方只打招呼时，简短回应。
 - 对方只发数字、问号、单个字这类看不出意思的消息（如"1""？""嗯？"），只输出：{sticker}
-- 对方询问时间、地点或价格时，只依据提供的资料回答；资料不足时，只输出 {human}。
+- 对方询问时间、地点或价格时，只依据聊天记录和资料回答；资料不足时，只输出 {unsure}。
+- 对方的话能直接接（闲聊、寒暄、确认收到、感谢），就正常简短回，不要输出 {unsure}。
 - 对方连续发来多条文字时，结合这些消息一起回复。
+- 判断档位只看对方这次说的话：之前聊过借钱这类话题，对方这次没再提（比如只问"在吗"），就正常回。
 
 {tone}
 """
@@ -145,6 +155,7 @@ def build_messages(context: list[dict], new: list[dict], tone: list[str], kb_hit
       tone_text = TONE_DEFAULT
     system_text = SYSTEM_PROMPT.format(
       human = HUMAN,
+      unsure = UNSURE,
       sticker = STICKER_REPLY,
       tone = tone_text
     )
@@ -217,7 +228,7 @@ def check_reply(text: str, new: list[dict]) -> tuple[bool, str]:
     if '\n' in cleaned:
         return (False, '回复里有换行')
 
-    if '转人工' in cleaned or '\uFFFD' in cleaned:
+    if '转人工' in cleaned or UNSURE in cleaned or '\uFFFD' in cleaned:
       return(False,'含转人工标记和异常符号')
     
     new_lines = []
@@ -263,8 +274,9 @@ def write_reply(msgs: list[dict], now: datetime, paused: bool, tone: list[str],
       tone    语气例句
       ask     调模型的函数：ask(messages) -> str。真机传 Qwen，离线测传假的
       search  知识库：search(问题) -> [{content, source, score}]，开关关着时返回 []
-    输出：{'send': bool, 'text': str, 'reason': str, 'pause': bool}
-      send=True 时 text 就是要交给 graph 的 task['msg']；pause=True 表示从此停住这个会话
+    输出：{'send': bool, 'text': str, 'reason': str, 'pause': bool, 'tier': str, 'notify': bool}
+      send=True 时 text 就是要发的那句；tier 是哪一档（normal/unsure/risky/sticker/media）；
+      notify=True 表示要通知本人（高风险档）。方案 A 起 pause 一律 False：不再停住会话
     """
     # TODO 1：split_new → route；'skip' 直接不发
     # TODO 2：'human'：发 BUSY，pause=True
@@ -280,23 +292,23 @@ def write_reply(msgs: list[dict], now: datetime, paused: bool, tone: list[str],
         'send':False,
         'text':'',
         'reason':reason,
-        'pause':paused
+        'pause':False,
+        'tier':'skip',
+        'notify':False
       }
 
-    if destination == 'human':
-      return {
-        'send':True,
-        'text':BUSY,
-        'reason':reason,
-        'pause':True
-      }
+    if destination.startswith('media'):
+      return {'send': True, 'text': MEDIA_REPLIES.get(destination.split(':')[1], '我等下看看'),
+              'reason': reason, 'pause': False, 'tier': 'media', 'notify': False}
 
     if destination == 'sticker':
       return {
         'send':True,
         'text':STICKER_REPLY,
         'reason':reason,
-        'pause':paused
+        'pause':False,
+        'tier':'sticker',
+        'notify':False
       }
     
     if destination == 'write':
@@ -318,12 +330,17 @@ def write_reply(msgs: list[dict], now: datetime, paused: bool, tone: list[str],
                 'send': False,
                 'text': '',
                 'reason': f'模型调用失败：{type(e).__name__}',
-                'pause': paused
+                'pause': False,
+                'tier': 'error',
+                'notify': False
             }
 
         if text == HUMAN:
-            reason = '模型要求转人工'
+            reason = '模型判断是高风险话题'
             break
+        if text == UNSURE:
+            return {'send': True, 'text': hold_reply(msgs), 'reason': '要我本人才知道的事实，回一句不给事实的话',
+                    'pause': False, 'tier': 'unsure', 'notify': False}
 
         allowed, reason = check_reply(text, new)
 
@@ -332,7 +349,9 @@ def write_reply(msgs: list[dict], now: datetime, paused: bool, tone: list[str],
                 'send': True,
                 'text': text,
                 'reason': 'ok',
-                'pause': False
+                'pause': False,
+                'tier': 'normal',
+                'notify': False
             }
 
         messages.append({
@@ -343,7 +362,7 @@ def write_reply(msgs: list[dict], now: datetime, paused: bool, tone: list[str],
             'role': 'user',
             'content': (
                 f'这条回复不能发送，原因：{reason}。'
-                f'请按原规则重写；无法安全回复时，只输出 {HUMAN}。'
+                f'请按原规则重写；是高风险话题就只输出 {HUMAN}，是要我本人才知道的事实就只输出 {UNSURE}。'
             )
         })
 
@@ -351,5 +370,13 @@ def write_reply(msgs: list[dict], now: datetime, paused: bool, tone: list[str],
         'send': True,
         'text': BUSY,
         'reason': reason,
-        'pause': True
-       } 
+        'pause': False,
+        'tier': 'risky',
+        'notify': True
+       }
+
+
+def hold_reply(msgs: list[dict]) -> str:
+    """输入聊天记录，输出一句"不确定档"的固定回复：挑一句我方最近三条里没用过的，免得连着发一样的话。"""
+    recent = [m['text'] for m in msgs if m['who'] == 'us'][-3:]
+    return next((h for h in HOLD_REPLIES if h not in recent), HOLD_REPLIES[0])

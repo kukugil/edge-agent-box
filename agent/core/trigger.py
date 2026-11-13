@@ -423,6 +423,7 @@ def run_one(hwnd: int, task: dict, since: float | None = None) -> tuple[str, Sho
             task['seen'] = d.get('seen')
             return SKIP, before
         task['msg'], task['pause'], task['reason'] = d['text'], d['pause'], d['reason']
+        task['notify'], task['tier'] = d.get('notify', False), d.get('tier', '')
         t1 = time.time()
     if adapter is None:
         return _run_graph(hwnd, task, before, t0, t1)
@@ -577,7 +578,7 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                 title = names[0]
                 task = retry_tasks.get(title) or {'to': title}
                 # 走到这里的旧任务都没发出去（发了或可能发了的已经划掉），回复要按最新的聊天重新写
-                task['msg'], task['pause'] = None, False
+                task['msg'], task['pause'], task['notify'] = None, False, False
                 who = WHITELIST.index(title) + 1  # 日志不写名字，写白名单第几个
                 if journal_path is not None:
                     task.update(journal=str(journal_path), who=who)
@@ -591,12 +592,11 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                     watch = None
                 if result in (OK, UNSURE):
                     sim_sent(task)
-                if task.get('pause') and result in (OK, UNSURE):
-                    # 转人工：「正在忙」只发一次，这次运行里不再回这个会话（借鉴 Rasa/Botpress：转人工是终点）
-                    isolated.add(who)
-                    print(f'  白名单#{who} 已转人工，这次运行不再自动回它')
-                    notify('端侧助手：转人工', f'白名单#{who}：{task.get("reason") or "需要你本人回复"}。'
-                           f'已回对方一句稍后回复，这次运行不再自动回，请你接手')
+                if task.get('notify') and result in (OK, UNSURE):
+                    # 方案 A（11/13）：高风险话题回固定话术、通知本人，但不停住会话，对方再发照样回
+                    print(f'  白名单#{who} 高风险话题，已回固定话术并通知你')
+                    notify('端侧助手：高风险话题，需要你本人处理',
+                           f'白名单#{who}：{task.get("reason") or "高风险话题"}。已回对方一句稍后回复，没有答应任何事')
                 if result == SKIP:
                     del pending[title]
                     retry_tasks.pop(title, None)
@@ -615,7 +615,7 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                     revisit.pop(title, None)
                     retry_tasks.pop(title, None)
                     print(f'白名单#{who} 已隔离，等人工确认')
-                    if not task.get('pause'):        # 转人工那条上面已经通知过
+                    if not task.get('notify'):       # 高风险那条上面已经通知过
                         notify('端侧助手：请确认是否发出', f'白名单#{who}：按过回车但没核对上，可能已经发出。'
                                f'已停止自动回这个会话，请看一眼聊天记录')
                 elif result == HUMAN:    # 没发；情况不对，重试也一样。冷却期内不再挑它，免得一直被拒
