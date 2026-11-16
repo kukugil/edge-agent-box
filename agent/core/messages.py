@@ -118,7 +118,23 @@ def _ocr_msgs(shot) -> tuple[list[dict] | None, str]:
     return [{'who': b['who'], 'kind': 'text', 'text': b['text'], 'at': None} for b in bs], 'ok'
 
 
-def read_chat(hwnd: int, title: str, now=None) -> dict:
+def _chat_preview(shot, lst, msgs, origin):
+    """从已经核对会话的截图截取最多六条可见消息所在区域。"""
+    left, top = origin
+    rect = lst.BoundingRectangle
+    x1, y1 = rect.left - left, rect.top - top
+    x2, y2 = rect.right - left, rect.bottom - top
+    if not (0 < x1 < x2 <= shot.image.width and 0 < y1 < y2 <= shot.image.height):
+        return None
+    visible = [m['box'] for m in msgs if m['who'] in ('us', 'them')
+               and y1 <= m['box'][1] < y2]
+    if visible:
+        y1 = max(y1, visible[-6:][0][1] - 8)
+        y2 = min(y2, max(box[3] for box in visible[-6:]) + 12)
+    return shot.image.crop((x1, y1, x2, y2))
+
+
+def read_chat(hwnd: int, title: str, now=None, *, preview=False) -> dict:
     """读一次当前会话的聊天记录。
 
     输入：hwnd 微信窗口；title 应该开着的会话名（白名单里的）；now 当前时间，不传就用现在。
@@ -157,7 +173,16 @@ def read_chat(hwnd: int, title: str, now=None) -> dict:
         return _result(False, 'uia', [], '有消息分不出左右（刚出来或在滚动）')
     if not chatlog.same_frames(first, second):
         return _result(False, 'uia', [], '两帧不一致（刚来消息或在滚动）')
-    return _result(True, 'uia', second, 'ok')
+    result = _result(True, 'uia', second, 'ok')
+    if preview:
+        image = _chat_preview(shot2, lst, second, (shot2.left, shot2.top))
+        # 裁剪过程中切换会话或移动窗口，都不保留截图。
+        final = capture_window(hwnd)
+        if (image is not None and final is not None and (final.left, final.top) == (shot2.left, shot2.top)
+                and final.image.size == shot2.image.size
+                and final.image.crop(box).tobytes() == shot2.image.crop(box).tobytes()):
+            result['preview'] = image
+    return result
 
 
 def wait_quiet(read, quiet: float = 3.0, timeout: float = 12.0, since: float | None = None,

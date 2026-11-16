@@ -17,6 +17,7 @@ import argparse
 import uuid
 import ctypes
 import json
+import os
 import sys
 import tempfile
 import time
@@ -24,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agent.core import graph, messages, reply
-from agent.tools import journal
+from agent.tools import history, journal, recall
 from PIL import Image
 
 from agent.tools import capture_window, check_responsive, click, norm, ocr, set_window_size, activate, window_rect, Shot
@@ -190,7 +191,7 @@ def sim_view(title: str, r: dict) -> dict:
 
 def read_view(hwnd: int, title: str) -> dict:
     """read_chat，再按模拟模式改一下谁说的（模拟没开时原样交回）。"""
-    return sim_view(title, messages.read_chat(hwnd, title))
+    return sim_view(title, messages.read_chat(hwnd, title, preview=title in WHITELIST))
 
 
 def after_reply(hwnd: int, shot: Shot, task: dict) -> str:
@@ -283,10 +284,39 @@ TONE = json.loads(TONE_FILE.read_text(encoding='utf-8')) if TONE_FILE.exists() e
 _CFG = load_config()
 
 
+def history_folder(title: str, simulate: bool) -> Path:
+    """返回本机联系人数据目录，文件传输助手模拟数据单独保存。"""
+    root = Path(os.getenv('LOCALAPPDATA') or Path.home()) / 'edge-agent'
+    return root / ('wechat-history-sim' if simulate and title == SIM_NAME else 'wechat-history')
+
+
+def remember(title: str, view: dict) -> list[dict]:
+    """输入目标和已核对的读取结果，保存原文并返回回复上下文。"""
+    # OCR 识别文字仍可处理当前一轮，但可能错字，不能当作长期原文。
+    if not view['ok'] or view.get('source') != 'uia' or title not in WHITELIST:
+        return view['msgs']
+    try:
+        context = history.sync(history_folder(title, SIM['on']), title, view['msgs'],
+                               preview=view.get('preview'))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # 历史文件失效时仍可用现场消息，日志不带联系人、路径或原文。
+        print(f'  对话历史读写失败（{type(exc).__name__}），本轮只用当前会话')
+        return view['msgs']
+    # 历史里的对方消息只有在存在我方回复作为分界时，才适合交给现有的新旧消息切分。
+    if context and not any(msg['who'] == 'us' for msg in context):
+        return view['msgs']
+    return context
+
+
 def ask_qwen(msgs: list[dict]) -> str:
     """输入 OpenAI 格式的 messages，输出 Qwen 的回复原文。超时设短：等太久不如这轮不回、下轮再试。"""
     # 自由回复会有长回答（默写、数学题），80 个 token 会被截断；300 够写一段
     return chat(_CFG['llm_url'], _CFG['llm_model'], msgs, max_tokens=300, timeout=30)
+
+
+def rank_history(msgs: list[dict]) -> str:
+    """使用同一内网模型执行独立检索调用，限制时长，失败时由关键词检索接手。"""
+    return chat(_CFG['llm_url'], _CFG['llm_model'], msgs, max_tokens=64, timeout=5)
 
 
 def decide(hwnd: int, title: str, since: float | None = None) -> dict:
@@ -301,12 +331,46 @@ def decide(hwnd: int, title: str, since: float | None = None) -> dict:
     if not r['ok']:
         return {'send': False, 'text': '', 'reason': '读消息失败：' + r['reason'], 'pause': False,
                 'read_ok': False, 'source': r['source']}
-    # 停住的会话在 serve 里就不挑了（放进 isolated），走到这里的都没停住
+    context = remember(title, r)
+    now = datetime.now()
+    covered, new = reply.split_new(context, now)
+    if title in WHITELIST:
+        marker = history.handoff_path(history_folder(title, SIM['on']), title)
+        status = {'send': False, 'text': '', 'reason': '会话等待人工处理', 'pause': True,
+                  'read_ok': True, 'source': r['source'], 'seen': msg_key(r['msgs'])}
+        try:
+            if marker.exists():
+                return status
+            observed = context
+            context = history.without_handled(marker, observed, reply.loan_followup)
+            covered, new = reply.split_new(context, now)
+            reason = reply.handoff_reason(new)
+            if reason:
+                try:
+                    start = next(i for i, message in enumerate(observed) if message is new[0])
+                    request = next((i for i in range(start, len(observed))
+                                    if observed[i]['who'] == 'them'
+                                    and reply.handoff_reason([observed[i]]) == reason), start)
+                    batch = {'start': start, 'request': request, 'reason': reason,
+                             'keys': history.message_keys(observed)}
+                    if r['source'] == 'ocr':
+                        batch.update(source='ocr', request_text=observed[request]['text'])
+                    history.start_handoff(marker, batch, preview=r.get('preview'))
+                except FileExistsError:
+                    return status
+                number = WHITELIST.index(title) + 1
+                shown = notify(f'端侧助手：{reason}', f'白名单#{number} 已暂停自动回复，请处理后手动恢复。')
+                print(f'  白名单#{number} 已转人工，通知启动={shown}')
+                return {**status, 'send': True, 'text': reply.LOAN_HANDOFF}
+        except (OSError, ValueError) as exc:
+            print(f'  人工接管状态读写失败（{type(exc).__name__}）')
+            return {**status, 'reason': '人工接管状态读写失败', 'read_ok': False}
+    recalled = recall.find(context, new, rank_history, reply.CONTEXT_N, covered=covered)
     # reply_mode：'free' 临时自由回复（11/13 用户要求，先不分流）；'tiers' 三档分流（方案 A）
     if load_config().get('reply_mode', 'tiers') == 'free':
-        d = reply.write_reply_free(r['msgs'], datetime.now(), TONE, ask_qwen)
+        d = reply.write_reply_free(context, now, TONE, ask_qwen, recalled=recalled)
     else:
-        d = reply.write_reply(r['msgs'], datetime.now(), False, TONE, ask_qwen, kb.search)
+        d = reply.write_reply(context, now, False, TONE, ask_qwen, kb.search, recalled=recalled)
     return {**d, 'read_ok': True, 'source': r['source'], 'seen': msg_key(r['msgs'])}
 
 
@@ -607,6 +671,8 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                     retry_tasks.pop(title, None)
                     skip_seen[title] = task.get('seen')
                 elif result == OK:
+                    # 发后重新读实际消息顺序，避免把生成的草稿或尚未确认的回复写成历史。
+                    remember(title, read_view(hwnd, title))
                     replied += 1
                     n += 1
                     del pending[title]
@@ -771,7 +837,15 @@ def main():
     parser.add_argument('--simulate', action='store_true', help='文件传输助手模拟：手机发来的当成对方的')
     parser.add_argument('--vision', action='store_true', help='发送只用看图适配器（测兜底那条路）')
     parser.add_argument('--graph', action='store_true', help='用旧的看图主循环发送（对照用）')
+    parser.add_argument('--resume-handoff', type=int, metavar='N', help='人工处理后恢复白名单第 N 个会话')
     args = parser.parse_args()
+    if args.resume_handoff is not None:
+        if args.seconds is not None or args.clear_journal or not 1 <= args.resume_handoff <= len(WHITELIST):
+            parser.error('请指定有效白名单序号，单独恢复人工接管')
+        title = WHITELIST[args.resume_handoff - 1]
+        history.resume_handoff(history.handoff_path(history_folder(title, args.simulate), title), reply.loan_request)
+        print(f'白名单#{args.resume_handoff} 的人工接管已解除')
+        return
     journal_path = Path(tempfile.gettempdir()) / 'edge-agent' / 'journal.jsonl'
     if args.clear_journal:
         startup_isolated(journal_path, clear_journal=True)

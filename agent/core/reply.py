@@ -17,12 +17,14 @@ graph 里的 rules 要求输入的字和 task['msg'] 一字不差，所以回复
    'text': str,                      # 文字消息的全文（多行保留 \\n）；表情包等是"动画表情"之类
    'at': datetime | None}            # 按最近的时间线推出来的时间，推不出是 None
 """
+import re
 from datetime import datetime, timedelta
 
 CONTEXT_N = 6                       # 旧消息最多带几条（11/11 定：五六句）
 MAX_AGE = timedelta(hours=1)        # 超过这么久的旧消息不带，免得把旧话题当成现在的（建议值，可改）
 MAX_TRIES = 3                       # 第一次 + 重写两次，都不过就按高风险回
 BUSY = '正在忙，稍后回复您'          # 高风险档的固定话术（11/12 用户定：保持原样）
+LOAN_HANDOFF = '我晚点亲自回复你'
 STICKER_REPLY = '怎么啦？'
 HUMAN = '转人工'                     # 模型判断是高风险时只输出这三个字
 UNSURE = '待确认'                    # 模型判断要我本人才知道的事实时只输出这三个字
@@ -73,6 +75,61 @@ def split_new(msgs: list[dict], now: datetime,
 
     return (context[-n:] if n> 0 else [],new)
     
+def loan_request(new: list[dict]) -> bool:
+    """判断新消息里是否明确请求借钱、垫钱或转钱。"""
+    text = ''.join(msg['text'] for msg in new if msg['kind'] == 'text')
+    text = re.sub(r'[^\w]', '', text)
+    return bool(re.search(r'借(?:给我|我)(?:点|一点|一下|些|个){0,3}(?:钱|[零一二两三四五六七八九十百千万\d])|'
+                          r'(?:能不能|能|可不可以|可以|想|请|麻烦|帮我).{0,3}借(?:点|些|一点|一下){0,2}钱|'
+                          r'^借(?:点|一点|些)钱$|'
+                          r'(?:能|可以|麻烦|帮|给我|你).{0,5}(?:垫[点付钱]|转[点账钱]|周转)|'
+                          r'(?:想|能|可以|打算)(?:向你|跟你|找你)借', text))
+
+
+def loan_followup(msg: dict) -> bool:
+    """识别已处理的借钱请求后紧接的金额或催问。"""
+    text = re.sub(r'[^\w.]', '', msg['text'])
+    return msg['who'] == 'them' and msg['kind'] == 'text' and bool(re.fullmatch(
+        r'[零一二两三四五六七八九十百千万亿\d.]+(?:块钱|块|元|人民币)?|'
+        r'(?:你)?(?:有没有|没有|能借|能不能借|可以借)(?:吗|啊|呢)?|'
+        r'(?:多少钱|多少|还要等多久|好吧)', text))
+
+
+def handoff_reason(new: list[dict]) -> str | None:
+    """明确需要本人回应的借款、邀约和工作事项。"""
+    if loan_request(new):
+        return '借钱请求'
+    text = '\n'.join(msg['text'] for msg in new if msg['kind'] == 'text')
+    clauses = re.split(r'[，。！？?,\n]', text)
+    resource = r'会议室|场地|工位|座位|设备|机房|桌位|房间'
+    availability = r'有(?:没有)?空(?:吗|嘛|么|呢|$)|方便(?:吗|嘛|么|呢|$)'
+    event = r'见(?:一|个)?面|吃饭|吃个饭|喝(?:一?杯)?咖啡|喝茶|聚一下'
+    invitation = (
+        rf'(?:能不能|可不可以|能否|能|可以|方不方便|愿不愿意|想不想|要不要).{{0,8}}'
+        rf'(?:{event}|出来|过来|参加|一起|赴约)|'
+        rf'(?:一起|约你|请你).{{0,12}}(?:{event})|'
+        rf'(?:{event}).{{0,5}}(?:行不行|好不好|可以吗|吗|不)$|'
+        r'你来不来|你去不去|能来吗|能去吗'
+    )
+    if any(re.search(invitation, clause)
+           or (re.search(availability, clause) and not re.search(resource, clause))
+           for clause in clauses):
+        return '邀约或时间需本人确认'
+    decision = r'能不能|可不可以|能否|请(?:你|帮)|帮我|需要你|麻烦你|同不同意|同意吗|你确认|你(?:来)?批(?:一下|准)'
+    work = r'项目|工作|客户|甲方|改动|请.{0,6}假|需求|方案|排期|交付|报价|合同|预算|审批|上线|评审|会议|公司'
+    if re.search(rf'(?:{decision}).{{0,14}}(?:审批|签字|提交|拍板|定下来|帮忙回复客户)', text):
+        return '工作事项需本人确认'
+    question = r'怎么样|到哪|何时|什么时候|哪天|怎么|如何|能不能|是否|有没有|多少|谁|意见|行不行|(?:吗|不)$'
+    lookup = (rf'代号|编号|取件码|请假(?:流程|手续)|'
+              rf'(?:会议|评审|约好).{{0,4}}(?:几点|在哪|哪里)|'
+              rf'(?:{resource}).{{0,8}}(?:有空|有没有空|方便|可用|能用|空闲)')
+    has_question = bool(re.search(r'[？?]', text) or re.search(question, text))
+    asks_work = any(re.search(work, clause) and not re.search(lookup, clause) for clause in clauses)
+    if re.search(work, text) and (re.search(decision, text) or has_question and asks_work):
+        return '工作事项需本人确认'
+    return None
+
+
 def route(new: list[dict], paused: bool) -> tuple[str, str]:
     """生成之前先分流：这次要不要调模型。
 
@@ -266,7 +323,7 @@ def check_reply(text: str, new: list[dict]) -> tuple[bool, str]:
 
 
 def write_reply(msgs: list[dict], now: datetime, paused: bool, tone: list[str],
-                ask, search) -> dict:
+                ask, search, *, recalled=()) -> dict:
     """回复节点：串起上面几步，给出最终决定。
 
     输入：
@@ -318,6 +375,7 @@ def write_reply(msgs: list[dict], now: datetime, paused: bool, tone: list[str],
     )
       kb_hits = search(question)
       messages = build_messages(context, new, tone, kb_hits)
+      add_recalled(messages, recalled)
 
       reason = '回复检查未通过'
 
@@ -400,7 +458,18 @@ def _line(msg: dict) -> str:
     return msg['text'] if msg['kind'] == 'text' else _PLACEHOLDER.get(msg['kind'], '[其他消息]')
 
 
-def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask) -> dict:
+def add_recalled(messages: list[dict], recalled) -> None:
+    """把检索到的旧原话附到当前回复输入，并标明用途。"""
+    if recalled:
+        messages[0]['content'] += ('\n历史原话是参考资料。采用最后明确确认的安排。'
+                                   '逐项回答对方问到的信息：同时问几点和去哪里时，'
+                                   '一句话写全时间、所有地点以及先后顺序。'
+                                   '资料缺少的时间或地点请问清楚。')
+        lines = '\n'.join(f"{'我' if msg['who'] == 'us' else '对方'}:{_line(msg)}" for msg in recalled)
+        messages[-1]['content'] += '\n\n【检索到的历史原话（从早到晚）】\n' + lines
+
+
+def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask, *, recalled=()) -> dict:
     """自由回复：对方有新消息就交给模型写一句，不分档、不拦话题。
 
     输入：msgs 聊天记录；now 当前时间；tone 语气例句；ask 调模型的函数
@@ -415,6 +484,7 @@ def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask) -> d
     user = f"【之前的聊天】\n{history}\n\n【对方消息】\n" + '\n'.join(_line(m) for m in new)
     messages = [{'role': 'system', 'content': FREE_PROMPT.format(tone=tone_text)},
                 {'role': 'user', 'content': user}]
+    add_recalled(messages, recalled)
     try:
         text = (ask(messages) or '').strip()
     except Exception as e:
