@@ -687,6 +687,23 @@ def pick_sessions(rows: list[dict], whitelist: list[str], pending: dict[str, int
 
 
 
+def drop_unchanged(names: list[str], skip_seen: dict, read) -> list[str]:
+    """输入待回的会话、{标题: 上次判不回时的聊天记录}、读聊天记录的函数，输出去掉"判过不回且没变"的会话。
+
+    为什么：11/18 真机判不回后，扫描每 4 秒又挑中同一个会话（会话开着时角标没被点掉），
+    每次都等静、调模型。skip_seen 原先只在"盯开着的聊天区"那条路上查，扫描这条路漏了。
+    读失败（比如这个会话没开着）就照常去回，宁可多读一次也不漏回。
+    """
+    keep = []
+    for name in names:
+        if name in skip_seen:
+            r = read(name)
+            if r['ok'] and msg_key(r['msgs']) == skip_seen[name]:
+                continue
+        keep.append(name)
+    return keep
+
+
 def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
     """常驻 seconds 秒：有白名单好友发消息就回，回完重扫，没有了就回去盯。
 
@@ -740,6 +757,11 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                 del pending[t], gave_up_at[t]
             # 第 2–7 步：看一眼 → 挑人 → 有人就回第一个，回完马上再看一眼
             names, skipped = pick_sessions(scan(hwnd), WHITELIST, pending, isolated=isolated)
+            if skip_seen:
+                kept = drop_unchanged(names, skip_seen, lambda t: read_view(hwnd, t))
+                for t in set(names) - set(kept):
+                    pending.pop(t, None)     # 判过不回、没变：不进账本，下面去等门铃，不空转
+                names = kept
             found_at = time.time()       # 角标已经在了，说明消息在这之前就到了：等静从这里算
             if skipped:
                 print(f'  跳过 {skipped} 个非白名单会话')
@@ -919,6 +941,17 @@ def run_offline() -> None:
         passed += ok
         print(f'{i}. {"对" if ok else "错"}  {desc}' + ('' if ok else f'  应该 {(want, want_skip)}，实际 {got}'))
     print(f'\n{passed}/{len(CASES)} 对' + ('，pick_sessions 通过' if passed == len(CASES) else ''))
+
+    # drop_unchanged：判过不回、聊天记录没变的会话不再去回（11/18 真机每 4 秒重进一次、每次调模型）
+    same = {'ok': True, 'msgs': [{'who': 'them', 'kind': 'text', 'text': '在吗'}]}
+    changed = {'ok': True, 'msgs': [*same['msgs'], {'who': 'them', 'kind': 'text', 'text': '你好'}]}
+    seen = {'测试好友A': msg_key(same['msgs'])}
+    reads = {'同样': lambda t: same, '变了': lambda t: changed, '读失败': lambda t: {'ok': False, 'msgs': []}}
+    drop_cases = [('同样', ['测试好友B']), ('变了', ['测试好友A', '测试好友B']), ('读失败', ['测试好友A', '测试好友B'])]
+    for desc, want in drop_cases:
+        got = drop_unchanged(['测试好友A', '测试好友B'], seen, reads[desc])
+        print(f'D. {"对" if got == want else "错"}  聊天记录{desc}' + ('' if got == want else f'  应该 {want}，实际 {got}'))
+        assert got == want, desc
     assert ok_r == len(REPLY_CASES) and passed == len(CASES), '离线测试失败'
 
 

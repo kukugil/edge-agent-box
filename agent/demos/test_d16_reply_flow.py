@@ -53,8 +53,9 @@ class TestD16ReplyFlow(unittest.TestCase):
             with self.subTest(kind=kind):
                 decision = reply.write_reply_free(msgs, NOW, [],
                                                   lambda _: '{"kind":"' + kind + '"}')
-                self.assertFalse(decision['send'])
-                self.assertEqual(decision['tier'], 'skip')
+                # 11/18 起：不只回钟点，也不静默卡住，回固定说明
+                self.assertEqual((decision['send'], decision['text']), (True, reply.HOLD))
+                self.assertEqual(decision['tier'], 'hold')
                 self.assertFalse(decision['notify'])
 
     def test_unknown_personal_state_does_not_pause(self):
@@ -105,8 +106,9 @@ class TestD16ReplyFlow(unittest.TestCase):
         two = message('us', decision['text'], origin='agent', reply_kind='clarify')
         third = message('them', '还是那个')
         decision = reply.write_reply_free([first, one, second, two, third], NOW, [], ask, intent='clarify')
-        self.assertFalse(decision['send'])
-        self.assertEqual(decision['tier'], 'skip')
+        # 第三轮不再澄清；11/18 起回固定说明而不是静默
+        self.assertEqual((decision['send'], decision['text']), (True, reply.HOLD))
+        self.assertEqual(decision['tier'], 'hold')
         self.assertFalse(decision['notify'])
 
     def test_clarification_count_survives_history_sync(self):
@@ -137,7 +139,7 @@ class TestD16ReplyFlow(unittest.TestCase):
             screen.append(message('them', '还是那个'))
             with patch.object(trigger.messages, 'wait_quiet', return_value=view(screen)):
                 decision = trigger.decide(0, '测试联系人甲')
-            self.assertEqual(decision['tier'], 'skip')
+            self.assertEqual((decision['tier'], decision['text']), ('hold', reply.HOLD))
             self.assertFalse(decision['pause'])
 
     def test_weather_sends_limitation_and_keeps_listening(self):

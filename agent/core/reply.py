@@ -35,6 +35,9 @@ UNSURE = '待确认'                    # 模型判断要我本人才知道的�
 #          回一句不给事实、不做承诺的话（下面这些固定句，轮着用，不交给模型自由写，免得它顺手编事实）
 #   高风险 借钱、转账、验证码、合同、要我答应办事：固定回 BUSY，并通知本人；不交给模型写
 HOLD_REPLIES = ('我看一下再跟你说', '这个我晚点确认下回你', '稍等，我看下再回你')
+# 判不发但确有来信时回的固定说明（11/18 用户定）：静默跳过会让会话卡住、后面的消息一起不回，
+# 也违反漏回为 0。发出后这批就落在我方回复上面，下一轮只看之后的新消息。
+HOLD = HOLD_REPLIES[1]
 MEDIA_REPLIES = {'image': '图片我等下看', 'voice': '语音我等下听', 'file': '我等下看看'}
 
 
@@ -645,10 +648,10 @@ def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask, *,
     if intent == 'handoff':
         return _handoff('明确事项需本人处理')
     if understanding is None and re.search(r'几点了|现在几点', question) and not _current_clock_question(question):
-        return _unanswered('本轮混合当前钟点与其他问题')
+        return _unanswered('本轮混合当前钟点与其他问题', HOLD)
     if intent == 'current_time':
         if not _current_clock_question(question):
-            return _unanswered('当前消息不止询问本机钟点')
+            return _unanswered('当前消息不止询问本机钟点', HOLD)
         return {'send': True, 'text': f'现在{now.hour}点{now.minute:02d}分',
                 'reason': '当前时间来自本机时钟', 'pause': False, 'tier': 'clock', 'notify': False}
     if intent == 'weather':
@@ -656,7 +659,7 @@ def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask, *,
     if intent == 'personal':
         return _unanswered('本人实时情况未经确认', '这个我现在没法确认。')
     if intent not in INTENTS:
-        return _unanswered('本轮消息无法分类')
+        return _unanswered('本轮消息无法分类', HOLD)
     if intent == 'general' and re.sub(r'[\s？?!！。,.，]', '', question) == '在吗':
         return {'send': True, 'text': '怎么啦？', 'reason': '普通招呼',
                 'pause': False, 'tier': 'free', 'notify': False}
@@ -664,12 +667,12 @@ def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask, *,
     if intent == 'clarify':
         attempts, previous_clarifications = _clarification_history(msgs, new, verified_only=turn is not None)
         if attempts >= 2:
-            return _unanswered('澄清两轮后仍无法判断')
+            return _unanswered('澄清两轮后仍无法判断', HOLD)
         if previous_clarifications:
             prior_question = next((msg['text'] for msg in reversed(context)
                                    if msg['who'] == 'them'), None)
             if prior_question == '\n'.join(_line(msg) for msg in new):
-                return _unanswered('对方重复原话，继续澄清无进展')
+                return _unanswered('对方重复原话，继续澄清无进展', HOLD)
     confirmed = [m for m in context if m['who'] == 'us' and m.get('origin') == 'human_confirmed']
     recalled = [m for m in recalled if m['who'] == 'us' and m.get('origin') == 'human_confirmed']
     if intent == 'history' and not (confirmed or recalled):

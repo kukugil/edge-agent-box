@@ -79,8 +79,9 @@ class TestD16ReplySources(unittest.TestCase):
         for response in ('无法分类', '{"kind":[]}', '{"kind":"other"}'):
             with self.subTest(response=response):
                 result = reply.write_reply_free(rows, NOW, [], Mock(return_value=response))
-                self.assertEqual((result['send'], result['pause'], result['notify']),
-                                 (False, False, False))
+                # 11/18 起分不出类回固定说明，仍不暂停、不通知
+                self.assertEqual((result['send'], result['text'], result['pause'], result['notify']),
+                                 (True, reply.HOLD, False, False))
 
     def test_work_word_in_general_knowledge_does_not_trigger_handoff(self):
         rows = [message('them', '能不能解释一下二维码的工作原理？')]
@@ -110,3 +111,26 @@ class TestQuoteLine(unittest.TestCase):
         out = reply.write_reply_free(new, NOW, [], ask, turn=([], new))
         self.assertEqual((out['send'], out['tier']), (True, 'clock'))
         self.assertEqual(out['text'], '现在14点37分')
+
+
+class TestNoSilentSkip(unittest.TestCase):
+    """11/18：判"不发"后会话卡住、后续消息一起不回。改为回固定说明、不暂停，这批算处理过。"""
+
+    def test_mixed_clock_question_gets_hold_reply(self):
+        ask = Mock(return_value=json.dumps({'kind': 'general'}))
+        new = [message('them', '几点了？你明天在哪')]
+        out = reply.write_reply_free(new, NOW, [], ask, turn=([], new))
+        self.assertTrue(out['send'])
+        self.assertIn(out['text'], reply.HOLD_REPLIES)
+        self.assertFalse(out['pause'])
+
+    def test_unclassified_gets_hold_reply(self):
+        ask = Mock(return_value='不是 JSON')
+        new = [message('them', '那个东西你看了没')]
+        out = reply.write_reply_free(new, NOW, [], ask, turn=([], new))
+        self.assertTrue(out['send'])
+        self.assertIn(out['text'], reply.HOLD_REPLIES)
+
+    def test_no_new_message_still_silent(self):
+        out = reply.write_reply_free([message('us', '好的')], NOW, [], Mock(), turn=([], []))
+        self.assertFalse(out['send'])
