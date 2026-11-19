@@ -49,8 +49,7 @@ def _recent(history, now):
 
 def _plan(recent, incoming, issues, ask, older=()):
     """只接受顺序和覆盖范围可核对的结构化分流。"""
-    text = '\n'.join(reply._line(row) for row in incoming)
-    if reply._current_clock_question(text):
+    if reply._current_clock_question(reply._said(incoming)):   # 规则只看新话，不带引用背景
         return [{'ids': list(range(1, len(incoming) + 1)), 'kind': 'current_time', 'meaning': '', 'missing': ''}]
     data = {'最近双方原话': reply._recent_dialogue(recent),
             '本轮来信': {i: reply._line(row) for i, row in enumerate(incoming, 1)},
@@ -174,7 +173,7 @@ def decide(history, incoming, issues, now, tone, ask, rank):
             '交本人处理': bool(handoffs),
             '本机时间': f'{now.hour}点{now.minute:02d}分' if any(
                 part['kind'] == 'current_time' and reply._current_clock_question(
-                    '\n'.join(reply._line(row) for row in rows)) for part, rows in automatic) else None,
+                    reply._said(rows)) for part, rows in automatic) else None,
         })
     text = result['text']
     tier = result.get('tier')

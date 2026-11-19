@@ -24,7 +24,10 @@ KINDS = {
     'mmui::ChatTextItemView': 'text',
     'mmui::ChatImageItemView': 'image',
     'mmui::ChatVoiceItemView': 'voice',
-    'mmui::ChatItemView': 'time',          # 时间线；系统提示（撤回等）也是这个类，同样不算任何一方
+    'mmui::ChatItemView': 'time',          # 时间线；部分系统提示也是这个类，同样不算任何一方
+    # 11/18 好友真机：撤回通知是单独的类，没有头像。原先落到 'file' 去判左右，整屏判不出、会话一直不回。
+    # 按时间线处理：不算任何一方、不触发回复；撤回后消息列表变化由发送前快照复核拦下旧草稿。
+    'mmui::ChatSystemInfoItemView': 'time',
 }
 STICKER_NAMES = ('动画表情', '[动画表情]')
 
@@ -118,6 +121,38 @@ def avatar_side(gray, box: tuple[int, int, int, int]) -> str:
     return {(True, False): THEM, (False, True): US, (False, False): NONE}.get((left, right), '?')
 
 
+REGISTERED = frozenset(KINDS) | {'mmui::ChatBubbleReferItemView'}
+_reported: set[str] = set()
+
+
+def frame_sides(items: list[dict], gray, log=print) -> list[str] | None:
+    """输入一帧的条目和窗口灰度图，输出每条的 THEM / US / NONE；有已登记的消息判不出左右时返回 None。
+
+    规则（11/18 定：登记表为主，未登记类按头像兜底）：
+    - 时间线、系统提示：NONE。
+    - 判得出头像的：按头像左右；未登记的类也一样，后面按 'file' 走"等下看"或接管。
+    - 已登记的消息类判不出：返回 None 等下一帧（新消息第一帧头像常常还没画上）。
+    - 未登记的类、两边都没头像：当系统提示（NONE），不再让整屏作废；类名记一次日志供以后登记。
+      新消息第一帧被误当系统提示时，第二帧有头像，两帧不一致，read_chat 会再等。
+    """
+    sides = []
+    for it in items:
+        if kind_of(it['cls'], it['text']) == 'time':
+            sides.append(NONE)
+            continue
+        side = avatar_side(gray, it['box'])
+        if side in (THEM, US):
+            sides.append(side)
+        elif side == NONE and it['cls'] not in REGISTERED:
+            if it['cls'] not in _reported:
+                _reported.add(it['cls'])
+                log(f'  [未登记控件] {it["cls"]}：没有头像，按系统提示处理')
+            sides.append(NONE)
+        else:
+            return None
+    return sides
+
+
 _WEEK = '一二三四五六日'
 _TIME = re.compile(
     r'^(?:(?P<y>\d{4})[年/-])?(?:(?P<mo>\d{1,2})[月/-](?P<d>\d{1,2})日?)?\s*'
@@ -161,6 +196,20 @@ def parse_time(label: str, now: datetime) -> datetime | None:
     return datetime(day.year, day.month, day.day, h, mi)
 
 
+_QUOTE = re.compile(r'^(?P<new>.*)\n引用 .+? 的消息 ?[:：] ?(?P<old>.*)$', re.S)
+
+
+def split_quote(text: str) -> tuple[str, str | None]:
+    """输入文字条目的 Name，输出 (新说的话, 被引用的旧话或 None)。
+
+    11/18 真机：引用消息也是 ChatTextItemView，Name 为「新话\\n引用 昵称 的消息 : 旧话」。
+    不拆的话旧话会被当成新消息去回、去判借钱；昵称是真人名字，直接丢掉不往下传。
+    只认换行后紧跟的那一段，正文里自己写了"引用"二字不会被拆。
+    """
+    m = _QUOTE.match(text)
+    return (m['new'], m['old']) if m else (text, None)
+
+
 def to_msgs(items: list[dict], sides: list[str], now: datetime) -> list[dict]:
     """输入条目、每条的左右（和 items 一一对应）和当前时间，输出约定格式的消息列表。
 
@@ -169,12 +218,17 @@ def to_msgs(items: list[dict], sides: list[str], now: datetime) -> list[dict]:
     out, at = [], None
     for it, side in zip(items, sides):
         kind = kind_of(it['cls'], it['text'])
-        if kind == 'time':
+        if kind == 'time' or side == NONE:       # 不属于任何一方的行都当系统提示（见 frame_sides）
             at = parse_time(it['text'], now) or at
             out.append({'who': NONE, 'kind': 'time', 'text': it['text'], 'at': at})
             continue
         # box 给发后核对找失败标记用；reply 不看它
-        out.append({'who': side, 'kind': kind, 'text': it['text'], 'at': at, 'box': it['box']})
+        msg = {'who': side, 'kind': kind, 'text': it['text'], 'at': at, 'box': it['box']}
+        if kind == 'text':
+            msg['text'], quote = split_quote(it['text'])
+            if quote is not None:
+                msg['quote'] = quote
+        out.append(msg)
     return out
 
 
@@ -222,6 +276,7 @@ def run_offline() -> None:
         (kind_of('mmui::ChatBubbleReferItemView', ''), 'file'),
         (kind_of('mmui::ChatVoiceItemView', '语音3"秒未播放'), 'voice'),
         (kind_of('mmui::ChatSomethingNewView', '名片'), 'file'),
+        (kind_of('mmui::ChatSystemInfoItemView', '对方撤回了一条消息'), 'time'),
     ]
     items = [{'cls': 'mmui::ChatTextItemView', 'text': '顶上的旧话', 'box': (0, 0, 1, 1)},
              {'cls': 'mmui::ChatItemView', 'text': '09:50', 'box': (0, 0, 1, 1)},
@@ -249,6 +304,45 @@ def run_offline() -> None:
     sides = (avatar_side(gray, (280, 10, 960, 90)), avatar_side(np.full((100, 960), 245.0), (280, 10, 960, 90)))
     ok += sides == (THEM, NONE)
     total += 1
+
+    # frame_sides：登记表 + 兜底。一行 100 高：0–100 带对方头像，100–200 空白，200–300 带我方头像
+    g = np.full((300, 960), 245.0)
+    g[10:50, 300:340] = 40.0
+    g[210:250, 900:936] = 40.0
+    row = lambda cls, y: {'cls': cls, 'text': 'x', 'box': (280, y, 960, y + 90)}
+    face_cases = [
+        ('已登记文字 + 头像', [row('mmui::ChatTextItemView', 0), row('mmui::ChatTextItemView', 200)], [THEM, US]),
+        ('已登记文字没头像：等下一帧', [row('mmui::ChatTextItemView', 100)], None),
+        ('未登记类没头像：按系统提示', [row('mmui::ChatTextItemView', 0), row('mmui::ChatNewSysView', 100)], [THEM, NONE]),
+        ('未登记类有头像：按消息判左右', [row('mmui::ChatNewBubbleView', 200)], [US]),
+        ('撤回通知：按系统提示', [row('mmui::ChatSystemInfoItemView', 100)], [NONE]),
+    ]
+    for desc, its, want in face_cases:
+        got = frame_sides(its, g, log=lambda *a: None)
+        ok += got == want
+        if got != want:
+            print(f'  错  {desc}：得到 {got}，应为 {want}')
+    total += len(face_cases)
+    sys_rows = to_msgs([row('mmui::ChatNewSysView', 100)], [NONE], now)
+    ok += (sys_rows[0]['who'], sys_rows[0]['kind']) == (NONE, 'time')
+    total += 1
+
+    # 引用：11/18 真机 Name 为「新话\n引用 昵称 的消息 : 旧话」，昵称不保留
+    quoted = to_msgs([{'cls': 'mmui::ChatTextItemView', 'text': '这个呢\n引用 某人 的消息 : 明天几点？',
+                       'box': (0, 0, 1, 1)},
+                      {'cls': 'mmui::ChatTextItemView', 'text': '普通一句', 'box': (0, 0, 1, 1)}], [THEM, THEM], now)
+    q_checks = [
+        ((quoted[0]['text'], quoted[0].get('quote')), ('这个呢', '明天几点？')),
+        ('某人' in str(quoted[0]), False),
+        ('quote' in quoted[1], False),
+        (split_quote('第一行\n第二行\n引用 某人 的消息：旧话'), ('第一行\n第二行', '旧话')),
+        (split_quote('我在引用 某人 的消息 : 这句'), ('我在引用 某人 的消息 : 这句', None)),
+    ]
+    for i, (got, want) in enumerate(q_checks, 1):
+        ok += got == want
+        if got != want:
+            print(f'  错  引用第 {i} 条：得到 {got!r}，应为 {want!r}')
+    total += len(q_checks)
     print(f'{ok}/{total} 对')
     assert ok == total, '离线测试失败'
 

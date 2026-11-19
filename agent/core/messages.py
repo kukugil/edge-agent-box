@@ -95,12 +95,8 @@ def _uia_frame(hwnd, lst, shot, now) -> list[dict] | None:
     # 行顶被切掉的看不到头像、Name 也可能只是半截，丢掉；完全在列表外的（虚拟列表留的）也丢掉
     items = [it for it in items if it['box'][1] >= frame[1] and it['box'][1] < frame[3]]
     gray = np.asarray(shot.image.convert('L')).astype(float)
-    sides = [chatlog.NONE if chatlog.kind_of(it['cls'], it['text']) == 'time'
-             else chatlog.avatar_side(gray, it['box']) for it in items]
-    if any(s not in (chatlog.THEM, chatlog.US) for it, s in zip(items, sides)
-           if chatlog.kind_of(it['cls'], it['text']) != 'time'):
-        return None
-    return chatlog.to_msgs(items, sides, now)
+    sides = chatlog.frame_sides(items, gray)
+    return None if sides is None else chatlog.to_msgs(items, sides, now)
 
 
 def _ocr_msgs(shot) -> tuple[list[dict] | None, str]:

@@ -89,3 +89,24 @@ class TestD16ReplySources(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestQuoteLine(unittest.TestCase):
+    """引用消息：模型只回新话，旧话作为标明的背景（11/18）。"""
+
+    def test_quote_marked_as_background(self):
+        line = reply._line(message('them', '这个呢', quote='明天几点？'))
+        self.assertTrue(line.startswith('这个呢'))
+        self.assertIn('明天几点？', line)
+        self.assertIn('引用', line)
+
+    def test_plain_text_unchanged(self):
+        self.assertEqual(reply._line(message('them', '在吗')), '在吗')
+
+    def test_quoted_clock_question_reads_clock(self):
+        # 11/18 真机：引用「在吗」问「几点了？」被判成混合问题、一直不回
+        ask = Mock(side_effect=AssertionError('问钟点不该调模型'))
+        new = [message('them', '几点了？', quote='在吗')]
+        out = reply.write_reply_free(new, NOW, [], ask, turn=([], new))
+        self.assertEqual((out['send'], out['tier']), (True, 'clock'))
+        self.assertEqual(out['text'], '现在14点37分')

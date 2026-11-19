@@ -467,9 +467,21 @@ FREE_PROMPT = """\
 _PLACEHOLDER = {'sticker': '[表情包]', 'image': '[图片]', 'voice': '[语音]', 'file': '[文件]'}
 
 
-def _line(msg: dict) -> str:
+def _line(msg: dict, quote: bool = True) -> str:
     # 非文字消息给模型一个占位，让它知道对方发了什么，而不是看到"动画表情"四个字去回
-    return msg['text'] if msg['kind'] == 'text' else _PLACEHOLDER.get(msg['kind'], '[其他消息]')
+    if msg['kind'] != 'text':
+        return _PLACEHOLDER.get(msg['kind'], '[其他消息]')
+    # 引用消息：只回新话，旧话标成背景，免得模型去回旧话（11/18）
+    return f"{msg['text']}（这句引用了之前的：{msg['quote']}）" if quote and msg.get('quote') else msg['text']
+
+
+def _said(new: list[dict]) -> str:
+    """输入本轮消息，输出对方本轮新说的话（不带引用背景）。
+
+    给钟点、天气、招呼这类按规则判断的地方用：11/18 真机引用「在吗」问「几点了？」，
+    规则读到带背景的整行，误判成混合问题。交给模型的仍用 _line 带上背景。
+    """
+    return '\n'.join(_line(msg, quote=False) for msg in new)
 
 
 def add_recalled(messages: list[dict], recalled) -> None:
@@ -538,8 +550,9 @@ def _recent_dialogue(context) -> str:
 def classify_new(new: list[dict], ask, context=()) -> str:
     """输入本轮消息、近邻上下文和模型调用，输出处理路径；无效分类不放行。"""
     question = '\n'.join(_line(msg) for msg in new)
-    compact = re.sub(r'[\s？?!！。,.，]', '', question)
-    if _current_clock_question(question):
+    said = _said(new)
+    compact = re.sub(r'[\s？?!！。,.，]', '', said)
+    if _current_clock_question(said):
         return 'current_time'
     if re.fullmatch(r'(?:今天|明天|现在|这会儿)?(?:的)?'
                     r'(?:天气(?:怎么样|如何|好吗)|会下雨吗|下雨吗)', compact):
@@ -626,7 +639,7 @@ def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask, *,
     except Exception as e:
         return {'send': False, 'text': '', 'reason': f'模型调用失败：{type(e).__name__}',
                 'pause': False, 'tier': 'error', 'notify': False}
-    question = '\n'.join(_line(msg) for msg in new)
+    question = _said(new)          # 下面只做钟点的规则判断，不带引用背景
     if understanding and understanding.get('明确修订后的请求'):
         question = understanding['明确修订后的请求']
     if intent == 'handoff':
@@ -667,7 +680,9 @@ def write_reply_free(msgs: list[dict], now: datetime, tone: list[str], ask, *,
             return _unanswered('旧安排缺少所问时间', '具体时间我这边确认不了。')
     tone_text = (TONE_HEAD + '\n'.join(tone)) if tone else TONE_DEFAULT
     recent = _recent_dialogue(context)
-    user = f"【之前的聊天】\n{recent}\n\n【对方这次说的】\n{question}"
+    shown = question if understanding and understanding.get('明确修订后的请求') else \
+        '\n'.join(_line(msg) for msg in new)          # 给模型的带引用背景
+    user = f"【之前的聊天】\n{recent}\n\n【对方这次说的】\n{shown}"
     base_prompt = FREE_PROMPT if understanding is None else TURN_PROMPT
     if understanding and understanding.get('明确修订后的请求'):
         user = question
