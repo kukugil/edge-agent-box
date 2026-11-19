@@ -88,6 +88,19 @@ class StoreTests(unittest.TestCase):
         self.store.observe(B, [incoming('分不清旧已读和未读')])
         self.assertTrue(self.store.review_items(B))
 
+    def test_longest_overlap_wins_over_repeated_fixed_receipt(self):
+        """11/18 真机：滚屏一行后重叠 10 条，固定回执凑巧让首尾也对上 1 条。"""
+        receipt = outgoing(reply.LOAN_HANDOFF)
+        old = [outgoing(f'旧话{i}') for i in range(8)]
+        screen = [outgoing('最上面'), receipt, *old, incoming('借钱'), receipt]
+        self.store.observe(A, screen)
+        self.store.observe(A, screen[1:] + [incoming('你喜欢猫吗')])
+        self.assertEqual([m['text'] for m in self.store.pending(A)['incoming']], ['你喜欢猫吗'])
+        self.assertEqual(self.store.review_items(A), [])
+        # 最长重叠只有两条时仍不猜
+        from agent.tools.reply_store import appended
+        self.assertIsNone(appended([receipt, receipt], [receipt, receipt, incoming('y')]))
+
     def test_retry_exhausted_and_independent_issue_resolution(self):
         self.store.discover(A, 1)
         self.store.observe(A, [incoming('第一条')])
@@ -176,6 +189,43 @@ class ReplyTests(unittest.TestCase):
 
 
 class ListenerTests(unittest.TestCase):
+    def test_file_transfer_simulation_does_not_answer_own_reply(self):
+        """模拟模式：角标不作数、旧气泡算边界；手机来的算来信，程序自己发的回复不再登记成来信。"""
+        def bubble(text):
+            return dict(who='us', kind='text', at=NOW, text=text)
+        screens = [[bubble('旧话')], [bubble('旧话'), bubble('在吗')],
+                   [bubble('旧话'), bubble('在吗'), bubble('在的')]]
+        name = trigger.SIM_NAME
+        saved = dict(trigger.SIM)
+        self.addCleanup(lambda: trigger.SIM.update(saved))
+        with TemporaryDirectory() as tmp:
+            store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            adapter = Mock(unique=Mock(return_value=True), selected=Mock(return_value=True))
+            read = lambda i: {'ok': True, 'source': 'uia', 'reason': 'ok', 'msgs': [dict(m) for m in screens[i]]}
+            badge = [{'title': name, 'dot_only': False, 'box': (0, 0, 1, 1)}]
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=adapter),
+                  patch.object(wechat_reply_flow.Listener, '_single_window', return_value=True),
+                  patch.object(trigger, 'WHITELIST', [name]),
+                  patch.object(trigger, 'open_title', return_value=name),
+                  # 真机 11/18：先看到角标 1、读屏时手机消息还没出来，账本判边界对不上并锁会话
+                  patch.object(wechat_reply_flow, 'find_unread_rows', side_effect=[badge, badge, []]),
+                  patch.object(wechat_reply_flow, '_badge_count', return_value=1),
+                  # trigger 和新流程共用同一个 messages 模块：依次是开模拟、基线、手机来信、我方回复
+                  patch.object(trigger.messages, 'read_chat', side_effect=[read(0), read(0), read(1), read(2)])):
+                print(trigger.sim_start(7))
+                listener = wechat_reply_flow.Listener(7, [name], store, preview=False)
+                listener._collect(None)
+                self.assertIsNone(store.pending(name))
+                listener._collect(None)
+                turn = store.pending(name)
+                self.assertEqual([m['text'] for m in turn['incoming']], ['在吗'])
+                self.assertEqual(store.scheduled([name]), [name])
+                store.finish(turn['id'], 'sent', 'ok')
+                trigger.sim_sent({'to': name, 'msg': '在的', 'tier': ''})
+                listener._collect(None)
+                self.assertIsNone(store.pending(name))
+                self.assertEqual(store.review_items(name), [])
+
     def test_generation_and_delivery_share_real_persistent_batch(self):
         with TemporaryDirectory() as tmp:
             store = ReplyStore(Path(tmp) / 'reply.db', mode='send')

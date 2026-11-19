@@ -980,8 +980,11 @@ def main():
     args = parser.parse_args()
     if args.reply_flow:
         if (args.seconds is None or args.seconds <= 0 or args.clear_journal or args.resume_handoff is not None
-                or args.simulate or args.vision or args.graph or not args.reply_contact
-                or any(name not in WHITELIST or name == SIM_NAME for name in args.reply_contact)
+                or args.vision or args.graph or not args.reply_contact
+                # 文件传输助手只能单独、且以模拟方式接入：不模拟时它的气泡全是我方，模拟时不能混进真实好友
+                or (args.simulate or SIM_NAME in args.reply_contact) and args.reply_contact != [SIM_NAME]
+                or SIM_NAME in args.reply_contact and not args.simulate
+                or any(name not in WHITELIST for name in args.reply_contact)
                 or any(sum(norm(other) == norm(name) for other in WHITELIST) != 1
                        for name in args.reply_contact)
                 or len(set(args.reply_contact)) != len(args.reply_contact)):
@@ -990,6 +993,10 @@ def main():
         wins = graph._wechat_windows()
         if len(wins) != 1:
             parser.error('请只打开一个已登录的测试微信主窗口')
+        if args.simulate:
+            print(sim_start(wins[0].hwnd))
+            if not SIM['on']:
+                return
         return wechat_reply_flow.run(wins[0].hwnd, args.seconds, args.reply_contact,
                                      mode=args.reply_flow, path=args.reply_db)
     if args.reply_contact or args.reply_db:

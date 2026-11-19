@@ -53,6 +53,7 @@ class Listener:
         self.adapter.count_mine = lambda title, text: (
             send._uia_count(hwnd, title, text) if self._safe_target(title) else None)
         self.last_view = None
+        self.waiting = False
 
     def _single_window(self):
         """双开或主窗口变化时，停止操作原来绑定的窗口。"""
@@ -73,7 +74,19 @@ class Listener:
         view = messages.read_chat(self.hwnd, title)
         if view['source'] != 'uia':
             return {**view, 'ok': False, 'reason': '无法核对微信控件中的原文'}
-        return view
+        # 模拟没开或不是文件传输助手时原样交回；开着时把手机发来的我方气泡改标为来信
+        return trigger.sim_view(title, view)
+
+    @staticmethod
+    def _simulated(title):
+        return trigger.SIM['on'] and norm(title) == norm(trigger.SIM_NAME)
+
+    def _observe(self, title, msgs):
+        """登记来信。模拟时开始前的旧气泡标成 none，账本快照会丢掉它们、边界变空；
+        这里只对账本按我方气泡算进边界，聊天历史和回复内核看到的仍是原标记。"""
+        if self._simulated(title):
+            msgs = [{**msg, 'who': 'us'} if msg['who'] == 'none' else msg for msg in msgs]
+        self.store.observe(title, msgs)
 
     def _collect(self, shot):
         """同一张图确认角标和当前打开会话，先登记再切窗。"""
@@ -82,13 +95,15 @@ class Listener:
             matches = [row for row in rows if norm(row['title']) == norm(title)]
             if matches:
                 count = _badge_count(shot, matches[0]) if len(matches) == 1 else -1
-                self.store.discover(title, count)
+                if not self._simulated(title):
+                    # 模拟时角标对不上屏幕：手机来的消息在电脑上算我方，只认屏幕上新增的气泡
+                    self.store.discover(title, count)
         current = trigger.open_title(shot)
         title = next((title for title in self.titles if norm(title) == norm(current) and current), None)
         if title:
             view = self._read(title)
             if view['ok']:
-                self.store.observe(title, view['msgs'])
+                self._observe(title, view['msgs'])
             else:
                 self.store.watch_failed(title, view['reason'])
 
@@ -103,7 +118,7 @@ class Listener:
         if not view['ok'] or not view['quiet']:
             self.store.read_failed(title, view['reason'] if not view['ok'] else '来信尚未稳定')
             return
-        self.store.observe(title, view['msgs'])
+        self._observe(title, view['msgs'])
         if not self.store.can_reply(title):
             return
         turn = self.store.pending(title)
@@ -125,7 +140,7 @@ class Listener:
             self.store.retry(turn['id'], '生成后无法复核来信')
             return
         if trigger.msg_key(latest['msgs']) != trigger.msg_key(view['msgs']):
-            self.store.observe(title, latest['msgs'])
+            self._observe(title, latest['msgs'])
             return
         if self.preview or result['status'] == 'unanswered':
             state = 'preview' if self.preview else 'unanswered'
@@ -141,6 +156,8 @@ class Listener:
                                                         issues=result['issues'], reason=result['reason'])}
         outcome, reason = send.deliver(self.adapter, task, log=self.log)
         if outcome == send.OK:
+            # 必须在下一次读屏前登记：否则模拟会把刚发的回复当成手机来信，自己回自己
+            trigger.sim_sent(task)
             trigger.remember(title, self._read(title), sent_task=task)
         elif outcome == send.HUMAN:
             self.store.finish(turn['id'], 'review', reason, issues=result['issues'])
@@ -152,13 +169,27 @@ class Listener:
         """定时重扫，角标和打开会话各自有变化时均会复查。"""
         deadline = time.monotonic() + seconds
         self.store.recover()
-        if (not self._single_window() or not check_responsive(self.hwnd)[0]
-                or not any(self.adapter.unique(title) for title in self.titles)
-                or not trigger.prepare(self.hwnd)):
+        # 先 prepare 把微信拉到前面再核对能否响应，和旧入口一致；反过来做，人在别的窗口时一启动就失败
+        if (not self._single_window() or not trigger.prepare(self.hwnd)
+                or not check_responsive(self.hwnd)[0]
+                or not any(self.adapter.unique(title) for title in self.titles)):
             raise RuntimeError('未找到可唯一定位的白名单测试会话')
         while time.monotonic() < deadline:
-            if not self._single_window() or not check_responsive(self.hwnd)[0]:
+            if not self._single_window():
                 raise RuntimeError('无法确认唯一且可响应的微信主窗口')
+            ok, why = check_responsive(self.hwnd)
+            if not ok:
+                # 只是不在前台（人在用别的窗口）就等，不截图也不动微信；隐藏、最小化、卡死仍停
+                if '前台' not in why:
+                    raise RuntimeError('无法确认唯一且可响应的微信主窗口：' + why)
+                if not self.waiting:
+                    self.log('微信不在前台，等它回到前台再看')
+                self.waiting = True
+                time.sleep(trigger.POLL)
+                continue
+            if self.waiting:
+                self.log('微信回到前台，继续监听')
+                self.waiting = False
             shot = capture_window(self.hwnd)
             if shot is None:
                 time.sleep(trigger.POLL)

@@ -31,6 +31,9 @@ def _snapshot(rows):
             for row in rows if row['who'] in ('us', 'them')]
 
 
+MIN_OVERLAP = 3
+
+
 def appended(previous, current):
     """返回可确认新增的气泡。没有可靠锚点或有多个解释时返回 None。"""
     if not previous:
@@ -44,6 +47,10 @@ def appended(previous, current):
         if all(_same(a, b) for a, b in zip(previous[-size:], current[:size])):
             matches.append(size)
     if len(matches) == 1:
+        return current[matches[0]:]
+    # 控件树只给屏上十来条、没有消息编号，只能按内容对齐。固定回执等重复短句会让首尾凑巧再对上 1–2 条；
+    # 最长重叠至少 3 条且不短于次长的两倍才采信（11/18 真机：10 条对 1 条），否则仍交人工核对
+    if len(matches) > 1 and matches[0] >= MIN_OVERLAP and matches[0] >= 2 * matches[1]:
         return current[matches[0]:]
     return None
 
