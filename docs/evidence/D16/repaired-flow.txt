@@ -1,0 +1,22 @@
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+{"case": "clock_with_old_trip", "expected": "clock", "tier": "clock", "text": "现在2点19分"}
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  白名单#1 已转人工，通知启动=True
+{"case": "unknown_old_trip", "expected": "handoff", "tier": "handoff", "text": "我晚点亲自回复你"}
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+{"case": "confirmed_old_trip", "expected": "free", "tier": "free", "text": "九点"}
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+{"case": "confirmed_old_trip_far", "expected": "free", "tier": "free", "text": "九点"}
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  白名单#1 已转人工，通知启动=True
+{"case": "personal_status", "expected": "handoff", "tier": "handoff", "text": "我晚点亲自回复你"}
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  白名单#1 已转人工，通知启动=True
+{"case": "personal_invitation", "expected": "handoff", "tier": "handoff", "text": "我晚点亲自回复你"}
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+{"case": "short_ambiguity", "expected": "clarify", "tier": "clarify", "text": "这个1是指什么呀？"}
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  白名单#1 已转人工，通知启动=True
+{"case": "mixed_clock_and_knowledge", "expected": "handoff", "tier": "handoff", "text": "我晚点亲自回复你"}
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+{"case": "general_knowledge", "expected": "free", "tier": "free", "text": "一种用黑白方块图案表示信息的编码，手机扫一下就能读取内容。"}

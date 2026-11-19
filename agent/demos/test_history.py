@@ -44,7 +44,7 @@ class TestHistory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             env = {**os.environ, 'LOCALAPPDATA': directory}
             root = Path(directory) / 'edge-agent' / 'wechat-history'
-            ack = message('us', '收到，测试编号是青松47')
+            ack = {**message('us', '收到，测试编号是青松47'), 'origin': 'human_confirmed'}
             history.sync(root, '测试联系人甲', [message('them', '我们用青松47'), ack])
             # 启动新解释器。窗口只保留最后一句旧回复和新问题。
             child = '''
@@ -56,6 +56,10 @@ view = {'ok': True, 'source': 'uia', 'reason': 'ok', 'msgs': [
     {'who': 'them', 'kind': 'text', 'text': '编号是什么？', 'at': None},
 ]}
 def ask(prompt):
+    if '只判断当前这一条微信消息' in prompt[0]['content']:
+        return '{"kind":"history"}'
+    if '只核对候选微信回复' in prompt[0]['content']:
+        return '{"ok":true}'
     print(json.dumps(prompt, ensure_ascii=True))
     return '青松47'
 with patch.object(t, 'WHITELIST', ['测试联系人甲']), patch.object(t.messages, 'wait_quiet', return_value=view), patch.object(t, 'ask_qwen', side_effect=ask):

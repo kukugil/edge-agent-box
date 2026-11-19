@@ -226,7 +226,8 @@ def sync(root: Path, contact: str, messages: list[dict], *, preview=None) -> lis
     key = hashlib.sha256(contact.encode('utf-8')).hexdigest()
     root.mkdir(parents=True, exist_ok=True)
     path = root / f'{key}.jsonl'
-    current = [{k: msg[k] for k in ('who', 'kind', 'text', 'at')}
+    current = [{**{k: msg[k] for k in ('who', 'kind', 'text', 'at')},
+                **{k: msg[k] for k in ('origin', 'reply_kind') if k in msg}}
                for msg in messages if msg['who'] in ('us', 'them')]
     # 同一联系人串行合并，临时文件写完整后替换。中断时原文件仍可读。
     with _contact_lock(root / f'{key}.lock'):

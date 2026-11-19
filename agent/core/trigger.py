@@ -144,49 +144,81 @@ def new_after_reply(shot: Shot, items: list[dict], task: dict, lay=None) -> str:
 
 # ---------- 文件传输助手模拟（D15，只在 --simulate 时开）----------
 # 手机发到文件传输助手的消息在电脑上显示在右边，算"我方"，程序不会回。模拟模式下：
-#   开跑时这个会话里已有的消息 + 程序自己发出去的回复 = 真正的"我方"，其余的我方消息当成"对方"。
+#   启动前屏上已有的消息不参与本轮；只对启动后能按顺序对齐的新增气泡判方向。
 # 为什么要记"自己发了什么"：不记的话，程序发出去的回复也会被当成对方的新消息，自己回自己停不下来。
 # 只对名字就是"文件传输助手"的白名单会话生效，真好友的会话不受影响。
 SIM_NAME = '文件传输助手'
-SIM = {'on': False, 'known': None}      # known: Counter[(kind, text)]，算作我方的条数
+SIM = {'on': False, 'seen': [], 'labels': [], 'pending': [], 'epoch': None, 'bad': False}
+
+
+def _sim_key(msg: dict) -> tuple:
+    """输入屏幕消息，输出用于相邻两次读屏对齐的可见内容。"""
+    return msg['who'], msg['kind'], msg['text']
 
 
 def sim_start(hwnd: int) -> str:
-    """开模拟：文件传输助手必须正开着，把现在屏上的我方消息记成"本来就有的"。输出一句说明。"""
-    from collections import Counter
+    """开模拟：把屏上现有消息设为边界，本轮只处理之后的新增消息。"""
     if SIM_NAME not in WHITELIST:
         return '白名单里没有文件传输助手，模拟没开'
     r = messages.read_chat(hwnd, SIM_NAME)
     if not r['ok']:
+        SIM['on'] = False
         return f'模拟没开：先在电脑上点开文件传输助手（{r["reason"]}）'
-    SIM['on'], SIM['known'] = True, Counter((m['kind'], m['text']) for m in r['msgs'] if m['who'] == 'us')
-    return f'模拟已开：文件传输助手里现有 {sum(SIM["known"].values())} 条算作我方旧消息'
+    SIM.update(on=True, seen=[_sim_key(m) for m in r['msgs']],
+               labels=[{'who': 'none'} for _ in r['msgs']], pending=[],
+               epoch=uuid.uuid4().hex, bad=False)
+    return f'模拟已开：屏上 {len(r["msgs"])} 条旧消息只作边界'
 
 
 def sim_sent(task: dict) -> None:
-    """程序往文件传输助手发了（或可能发了）一句：记成我方的。"""
+    """输入已确认发送的任务，等下一次读屏核对新增的我方气泡。"""
     if SIM['on'] and norm(task['to']) == norm(SIM_NAME) and task.get('msg'):
-        SIM['known'][('text', task['msg'])] += 1
+        SIM['pending'].append((task['msg'], task.get('tier', '')))
 
 
 def sim_view(title: str, r: dict) -> dict:
-    """输入会话名和 read_chat 的结果，模拟开着且是文件传输助手时，把多出来的我方消息改成对方的。
-
-    同一句话出现的次数没超过"算作我方的条数"，就都还是我方；超出的那几条（最新的）算对方。
-    坑：旧消息滚出屏幕后，手机再发一句同样的话会被当成我方、不回。模拟用，接受。
-    """
+    """输入当前屏幕，按前后重叠判新增气泡；对不齐就停止模拟回复。"""
     if not (SIM['on'] and r['ok'] and norm(title) == norm(SIM_NAME)):
         return r
-    from collections import Counter
-    seen, out = Counter(), []
-    for m in r['msgs']:
-        if m['who'] == 'us':
-            k = (m['kind'], m['text'])
-            seen[k] += 1
-            if seen[k] > SIM['known'][k]:
-                m = {**m, 'who': 'them'}
-        out.append(m)
-    return {**r, 'msgs': out}
+    if SIM['bad']:
+        return {**r, 'ok': False, 'reason': '模拟消息来源不明'}
+    current = [_sim_key(msg) for msg in r['msgs']]
+    previous = SIM['seen']
+    if current[:len(previous)] == previous:
+        overlap = len(previous)
+        labels = list(SIM['labels'])
+    else:
+        overlap = next((n for n in range(min(len(previous), len(current)), 0, -1)
+                        if previous[-n:] == current[:n]), 0)
+        # 滚屏后相同内容可能对应多个位置，无法证明哪个气泡是新增的。
+        if not overlap or any(previous[i:i + overlap] == current[:overlap]
+                              for i in range(len(previous) - overlap)):
+            SIM['bad'] = True
+            return {**r, 'ok': False, 'reason': '模拟消息无法唯一对齐'}
+        labels = list(SIM['labels'][-overlap:])
+    pending = list(SIM['pending'])
+    new = r['msgs'][overlap:]
+    if pending and (not new or new[0]['kind'] != 'text' or new[0]['text'] != pending[0][0]):
+        # 尚未看到刚发送的气泡时可以继续等；看到别的新增气泡则不能猜顺序。
+        if new:
+            SIM['bad'] = True
+            return {**r, 'ok': False, 'reason': '模拟发送与新消息顺序不明'}
+    if pending and new and sum(m['kind'] == 'text' and m['text'] == pending[0][0] for m in new) > 1:
+        SIM['bad'] = True
+        return {**r, 'ok': False, 'reason': '模拟同文消息来源不明'}
+    for msg in new:
+        if msg['who'] == 'us' and pending:
+            expected, tier = pending.pop(0)
+            if msg['kind'] != 'text' or msg['text'] != expected:
+                SIM['bad'] = True
+                return {**r, 'ok': False, 'reason': '模拟发送内容未匹配'}
+            labels.append({'who': 'us', 'origin': 'agent', 'reply_kind': tier})
+        elif msg['who'] == 'us':
+            labels.append({'who': 'them', 'origin': 'other'})
+        else:
+            labels.append({'who': msg['who']})
+    SIM.update(seen=current, labels=labels, pending=pending)
+    return {**r, 'msgs': [{**msg, **label} for msg, label in zip(r['msgs'], labels)]}
 
 
 def read_view(hwnd: int, title: str) -> dict:
@@ -290,13 +322,27 @@ def history_folder(title: str, simulate: bool) -> Path:
     return root / ('wechat-history-sim' if simulate and title == SIM_NAME else 'wechat-history')
 
 
-def remember(title: str, view: dict) -> list[dict]:
-    """输入目标和已核对的读取结果，保存原文并返回回复上下文。"""
+def remember(title: str, view: dict, sent_task: dict | None = None) -> list[dict]:
+    """输入目标和已核对的读取结果，保存原文；已确认发送的气泡标记来源。"""
     # OCR 识别文字仍可处理当前一轮，但可能错字，不能当作长期原文。
     if not view['ok'] or view.get('source') != 'uia' or title not in WHITELIST:
         return view['msgs']
+    if sent_task and sent_task.get('msg'):
+        matches = [i for i, msg in enumerate(view['msgs'])
+                   if msg['who'] == 'us' and msg['kind'] == 'text'
+                   and msg['text'] == sent_task['msg']]
+        if len(matches) == 1:
+            messages_with_origin = list(view['msgs'])
+            index = matches[0]
+            messages_with_origin[index] = {**messages_with_origin[index],
+                                           'origin': 'agent',
+                                           'reply_kind': sent_task.get('tier', '')}
+            view = {**view, 'msgs': messages_with_origin}
     try:
-        context = history.sync(history_folder(title, SIM['on']), title, view['msgs'],
+        folder = history_folder(title, SIM['on'])
+        if SIM['on'] and title == SIM_NAME:
+            folder = folder / SIM['epoch']
+        context = history.sync(folder, title, view['msgs'],
                                preview=view.get('preview'))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         # 历史文件失效时仍可用现场消息，日志不带联系人、路径或原文。
@@ -332,7 +378,12 @@ def decide(hwnd: int, title: str, since: float | None = None) -> dict:
         return {'send': False, 'text': '', 'reason': '读消息失败：' + r['reason'], 'pause': False,
                 'read_ok': False, 'source': r['source']}
     context = remember(title, r)
-    now = datetime.now()
+    try:
+        now = datetime.now()
+    except (OSError, OverflowError) as exc:
+        return {'send': False, 'text': '', 'reason': f'本机时钟不可读：{type(exc).__name__}',
+                'pause': True, 'tier': 'error', 'notify': False,
+                'read_ok': False, 'source': r['source']}
     covered, new = reply.split_new(context, now)
     if title in WHITELIST:
         marker = history.handoff_path(history_folder(title, SIM['on']), title)
@@ -365,12 +416,44 @@ def decide(hwnd: int, title: str, since: float | None = None) -> dict:
         except (OSError, ValueError) as exc:
             print(f'  人工接管状态读写失败（{type(exc).__name__}）')
             return {**status, 'reason': '人工接管状态读写失败', 'read_ok': False}
-    recalled = recall.find(context, new, rank_history, reply.CONTEXT_N, covered=covered)
     # reply_mode：'free' 临时自由回复（11/13 用户要求，先不分流）；'tiers' 三档分流（方案 A）
     if load_config().get('reply_mode', 'tiers') == 'free':
-        d = reply.write_reply_free(context, now, TONE, ask_qwen, recalled=recalled)
+        try:
+            intent = reply.classify_new(new, ask_qwen, covered) if new else None
+        except Exception as exc:
+            return {'send': False, 'text': '', 'reason': f'模型调用失败：{type(exc).__name__}',
+                    'pause': False, 'tier': 'error', 'notify': False,
+                    'read_ok': False, 'source': r['source']}
+        recalled = []
+        if intent == 'history':
+            new_ids = {id(msg) for msg in new}
+            safe = [msg for msg in context if id(msg) in new_ids or msg['who'] == 'them' or
+                    (msg['who'] == 'us' and msg.get('origin') == 'human_confirmed')]
+            recalled = recall.find(safe, new, rank_history, reply.CONTEXT_N)
+        d = reply.write_reply_free(context, now, TONE, ask_qwen,
+                                   recalled=recalled, intent=intent)
     else:
+        recalled = recall.find(context, new, rank_history, reply.CONTEXT_N, covered=covered)
         d = reply.write_reply(context, now, False, TONE, ask_qwen, kb.search, recalled=recalled)
+    if d.get('tier') == 'handoff' and title in WHITELIST:
+        try:
+            start = next(i for i, message in enumerate(observed) if message is new[0])
+            batch = {'start': start, 'request': start, 'reason': d['reason'],
+                     'keys': history.message_keys(observed)}
+            if r['source'] == 'ocr':
+                batch.update(source='ocr', request_text=observed[start]['text'])
+            history.start_handoff(marker, batch, preview=r.get('preview'))
+        except FileExistsError:
+            return status
+        except (OSError, ValueError, StopIteration) as exc:
+            print(f'  资料不足接管状态创建失败（{type(exc).__name__}）')
+            return {**status, 'reason': '人工接管状态创建失败', 'read_ok': False}
+        number = WHITELIST.index(title) + 1
+        shown = notify('端侧助手：资料不足，需本人处理',
+                       f'白名单#{number} 已暂停自动回复，请处理后手动恢复。')
+        print(f'  白名单#{number} 已转人工，通知启动={shown}')
+        return {**status, 'send': True, 'text': reply.LOAN_HANDOFF,
+                'reason': d['reason'], 'tier': 'handoff'}
     return {**d, 'read_ok': True, 'source': r['source'], 'seen': msg_key(r['msgs'])}
 
 
@@ -659,7 +742,7 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                 note_left(before, title)
                 if before is not None:   # 已经切到这个会话，原来盯的那个交给账本或 revisit 了
                     watch = None
-                if result in (OK, UNSURE):
+                if result == OK:
                     sim_sent(task)
                 if task.get('notify') and result in (OK, UNSURE):
                     # 方案 A（11/13）：高风险话题回固定话术、通知本人，但不停住会话，对方再发照样回
@@ -672,7 +755,7 @@ def serve(hwnd: int, seconds: float, isolated=None, journal_path=None) -> dict:
                     skip_seen[title] = task.get('seen')
                 elif result == OK:
                     # 发后重新读实际消息顺序，避免把生成的草稿或尚未确认的回复写成历史。
-                    remember(title, read_view(hwnd, title))
+                    remember(title, read_view(hwnd, title), sent_task=task)
                     replied += 1
                     n += 1
                     del pending[title]
