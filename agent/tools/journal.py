@@ -19,6 +19,8 @@ def append(path, rec):
 
 def record(task, status):
     """输入任务和状态，按可选 journal 写脱敏记录；没有路径时不写，输出无。"""
+    if task.get('audit') is not None:
+        task['audit'](status)
     if 'journal' in task:
         append(task['journal'], {'time': datetime.now(timezone.utc).isoformat(),
                'id': task['id'], 'who': task['who'],

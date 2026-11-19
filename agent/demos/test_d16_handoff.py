@@ -1,4 +1,4 @@
-"""D16：资料不足时持久接管；只用测试联系人和临时目录。"""
+"""D16：明确事项接管；只用测试联系人和临时目录。"""
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,16 +13,16 @@ def message(who, text):
 
 
 class TestD16Handoff(unittest.TestCase):
-    def test_unknown_personal_fact_is_saved_and_subsequent_message_is_held(self):
+    def test_explicit_work_request_is_saved_and_subsequent_message_is_held(self):
         with tempfile.TemporaryDirectory() as directory:
             contact = '测试联系人甲'
-            first = message('them', '你明天几点开会？')
+            first = message('them', '这笔支出能由你签核吗？')
             view = {'ok': True, 'source': 'uia', 'reason': 'ok', 'msgs': [first]}
             root = Path(directory)
             with patch.object(trigger, 'WHITELIST', [contact]), \
                  patch.object(trigger, 'history_folder', return_value=root), \
                  patch.object(trigger.messages, 'wait_quiet', return_value=view), \
-                 patch.object(trigger, 'ask_qwen', return_value=reply.HUMAN) as ask, \
+                 patch.object(trigger, 'ask_qwen', return_value='{"kind":"handoff"}') as ask, \
                  patch.object(trigger, 'notify', return_value=True) as notify:
                 decision = trigger.decide(0, contact)
                 self.assertTrue(decision['send'])
@@ -31,7 +31,7 @@ class TestD16Handoff(unittest.TestCase):
                 self.assertEqual(decision['tier'], 'handoff')
                 marker = history.handoff_path(root, contact)
                 details = history.handoff_details(marker, reply.loan_request)
-                self.assertEqual(details['reason'], '资料不足或需要本人决定')
+                self.assertEqual(details['reason'], '明确事项需本人处理')
                 self.assertEqual(details['request']['text'], first['text'])
                 notify.assert_called_once()
 
@@ -46,6 +46,24 @@ class TestD16Handoff(unittest.TestCase):
                 resumed = trigger.decide(0, contact)
                 self.assertFalse(resumed['send'])
                 self.assertEqual(ask.call_count, 1)
+
+    def test_weather_does_not_hide_a_loan_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            contact = '测试联系人甲'
+            view = {'ok': True, 'source': 'uia', 'reason': 'ok',
+                    'msgs': [message('them', '今天天气怎么样？'), message('them', '能借我500块吗？')]}
+            root = Path(directory)
+            with patch.object(trigger, 'WHITELIST', [contact]), \
+                 patch.object(trigger, 'history_folder', return_value=root), \
+                 patch.object(trigger.messages, 'wait_quiet', return_value=view), \
+                 patch.object(trigger, 'ask_qwen') as ask, \
+                 patch.object(trigger, 'notify') as notify:
+                decision = trigger.decide(0, contact)
+            self.assertTrue(decision['pause'])
+            item = history.handoff_details(history.handoff_path(root, contact), reply.loan_request)
+            self.assertEqual(item['reason'], '借钱请求')
+            notify.assert_called_once()
+            ask.assert_not_called()
 
     def test_model_failure_does_not_create_handoff_or_acknowledgement(self):
         with tempfile.TemporaryDirectory() as directory:

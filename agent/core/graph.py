@@ -394,7 +394,11 @@ def act(state: AgentState) -> dict:
                 elif str(a.get('key', '')).lower() != 'enter':
                     result = '只许按 enter，没动键鼠'
                 else:
-                    ok, why = send_permit(state)     # 最后一刻再查，查过马上按
+                    fresh = True
+                    if 'reply_snapshot' in state['task']:
+                        from agent.core.trigger import reply_snapshot_matches
+                        fresh = reply_snapshot_matches(state['hwnd'], state['task'])
+                    ok, why = send_permit(state) if fresh else (False, '发送前消息已变化或无法核对')
                     if ok:
                         journal.record(state['task'], 'about_to_send')
                         press('enter')

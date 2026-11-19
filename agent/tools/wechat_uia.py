@@ -44,6 +44,20 @@ class WeChatUIA:
         it = self._root.ListItemControl(AutomationId=ITEM_PREFIX + title, searchDepth=30)
         return it if it.Exists(1) else None
 
+    def unique(self, title: str) -> bool:
+        """同一控件标识匹配多行时，不能用第一行当作收件人。"""
+        try:
+            expected = ITEM_PREFIX + title
+            count = 0
+            for item, _ in auto.WalkControl(self._root, includeTop=False, maxDepth=30):
+                if item.AutomationId == expected:
+                    count += 1
+                    if count > 1:
+                        return False
+            return count == 1
+        except (OSError, RuntimeError, AttributeError):
+            return False
+
     def available(self) -> bool:
         """输出：这个窗口能不能走控件树（输入框找得到、能读值）。"""
         try:

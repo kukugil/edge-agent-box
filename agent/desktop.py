@@ -1,5 +1,7 @@
 """端侧盒子 Windows 托盘和人工接管窗口。"""
 import argparse
+import sqlite3
+from datetime import datetime
 from importlib.util import find_spec
 import os
 import sys
@@ -18,6 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from agent.core import reply, trigger
+from agent.core.wechat_reply_flow import database_path
+from agent.tools.reply_store import ReplyStore
 from agent.tools import history
 
 
@@ -74,9 +78,10 @@ def text_label(text, style=None):
 class Inbox(QMainWindow):
     """显示当前接管事项。隐藏窗口后仍可从托盘打开。"""
 
-    def __init__(self, contacts, app):
+    def __init__(self, contacts, app, reply_db=None):
         super().__init__()
         self.contacts = contacts
+        self.reply_db = reply_db
         self.items = {}
         self.current = None
         self.tray_count = None
@@ -183,6 +188,19 @@ class Inbox(QMainWindow):
                 continue
             if info is not None:
                 items[marker] = (name + ('（模拟）' if simulate else ''), info)
+        db_path = self.reply_db or database_path('send')
+        if db_path.is_file():
+            try:
+                store = ReplyStore(db_path)
+                for name, simulate in self.contacts:
+                    if not simulate:
+                        items.update(self.reply_items(store, name))
+            except (OSError, sqlite3.Error, ValueError):
+                failed['reply-db'] = '回复账本'
+                for key, value in self.items.items():
+                    if value[1].get('store'):
+                        items[key] = value
+                        failed[key] = value[0]
         self.read_failed = failed
         self.errors.setText('暂无法读取：' + '、'.join(failed.values()) if failed else '')
         self.errors.setVisible(bool(failed))
@@ -208,6 +226,32 @@ class Inbox(QMainWindow):
             self.tray.setToolTip(f'端侧盒子 · {count} 项待处理')
         self.render()
 
+    def reply_items(self, store, name):
+        """把新的事项和发送核对项适配成托盘已有的详情结构。"""
+        items = {}
+        for issue in store.open_issues(name):
+            key = f'issue:{issue["turn_id"]}:{issue["part"]}'
+            items[key] = (name, {'store': store.path, 'id': issue['turn_id'], 'part': issue['part'],
+                                 'reason': '需要本人处理', 'request': {'text': issue['text']},
+                                 'started': datetime.fromtimestamp(issue['created']),
+                                 'source': 'uia', 'aligned': True, 'followups': [], 'preview': b''})
+        for turn in store.review_items(name):
+            key = f'review:{turn["id"]}'
+            lines = [row['text'] for row in turn['incoming'] if row['who'] == 'them']
+            items[key] = (name, {'store': store.path, 'id': turn['id'], 'part': None,
+                                 'reason': turn['reason'], 'request': {'text': '\n'.join(lines) or '请核对微信来信'},
+                                 'started': datetime.fromtimestamp(turn['created']),
+                                 'source': 'uia', 'aligned': True, 'followups': [], 'preview': b''})
+        for turn in store.preview_items(name):
+            key = f'preview:{turn["id"]}'
+            lines = '\n'.join(row['text'] for row in turn['incoming'])
+            transcript = f'{lines}\n\n回复草稿 · 未发送\n{turn["draft"] or "本轮无发送草稿"}'
+            items[key] = (name, {'store': store.path, 'id': turn['id'], 'part': None, 'readonly': True,
+                                 'reason': turn['reason'], 'request': {'text': transcript},
+                                 'started': datetime.fromtimestamp(turn['created']),
+                                 'source': 'uia', 'aligned': True, 'followups': [], 'preview': b''})
+        return items
+
     def render(self):
         item = self.list.currentItem()
         self.current = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
@@ -220,9 +264,13 @@ class Inbox(QMainWindow):
             self.reason.setText('需要你接手时，事项会留在这里。')
             return
         name, info = selected
-        self.status.setText('等待人工处理')
+        self.status.setText('预览 · 未发送' if info.get('readonly') else '等待人工处理')
+        if info.get('readonly'):
+            self.resume.setEnabled(False)
+        self.resume.setText('已核对，结束此项' if info.get('store') else '已处理，恢复自动回复')
         self.title.setText(name)
-        self.reason.setText(f"{info['reason']} · {info['started']:%m-%d %H:%M} · 自动回复已暂停")
+        suffix = '' if info.get('store') else ' · 自动回复已暂停'
+        self.reason.setText(f"{info['reason']} · {info['started']:%m-%d %H:%M}{suffix}")
         request = info['request']
         source = '（OCR 识别）' if info['source'] == 'ocr' else ''
         lines = ['触发消息' + source, request['text'] if request else '未保存原文', '', '后续消息']
@@ -261,17 +309,23 @@ class Inbox(QMainWindow):
             return
         marker = self.current
         name, info = self.items[marker]
+        if info.get('readonly'):
+            return
         try:
-            history.resume_handoff(marker, reply.loan_request, expected=info['stamp'])
+            if info.get('store'):
+                if not ReplyStore(info['store']).resolve(name, info['id'], info['part']):
+                    raise history.HandoffChanged('事项已经变化')
+            else:
+                history.resume_handoff(marker, reply.loan_request, expected=info['stamp'])
         except history.HandoffChanged:
             self.feedback.setText('待处理内容已更新，请查看后再点恢复。')
             self.refresh()
             return
-        except (OSError, ValueError, TypeError, KeyError) as error:
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
             self.feedback.setText(f'恢复未完成，请稍后再试（{type(error).__name__}）。')
             self.refresh()
             return
-        self.feedback.setText(f'{name}已恢复自动回复。')
+        self.feedback.setText('已结束当前事项。' if info.get('store') else f'{name}已恢复自动回复。')
         self.refresh()
 
 
@@ -279,6 +333,7 @@ def main():
     parser = argparse.ArgumentParser(description='端侧盒子 Windows 托盘应用')
     parser.add_argument('--tray', action='store_true', help='启动时只显示托盘图标')
     parser.add_argument('--file-transfer-only', action='store_true', help='只显示文件传输助手的模拟事项')
+    parser.add_argument('--reply-db', type=Path, help='显示另一个测试回复账本中的事项')
     args = parser.parse_args()
     app = QApplication([sys.argv[0]])
     app.setQuitOnLastWindowClosed(False)
@@ -292,7 +347,7 @@ def main():
     contacts = [(name, False) for name in trigger.WHITELIST] if not args.file_transfer_only else []
     if trigger.SIM_NAME in trigger.WHITELIST:
         contacts.append((trigger.SIM_NAME, True))
-    window = Inbox(contacts, app)
+    window = Inbox(contacts, app, args.reply_db)
     if not args.tray:
         window.open_window()
     sys.exit(app.exec())

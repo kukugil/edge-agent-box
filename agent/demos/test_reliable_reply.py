@@ -1,0 +1,212 @@
+"""可恢复微信回复的独立需求样例。只用临时账本与替身，不碰微信。"""
+import json
+import unittest
+from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
+
+from agent.core import reply, reply_turn, send, trigger, wechat_reply_flow
+from agent.demos.test_send_flow import Fake
+from agent.tools.reply_store import ReplyStore
+
+NOW = datetime(2026, 11, 17, 17, 0)
+A, B = '测试会话甲', '测试会话乙'
+
+
+def incoming(text):
+    return dict(who='them', kind='text', at=NOW, text=text)
+
+
+def outgoing(text, origin='agent'):
+    return dict(who='us', kind='text', at=NOW, text=text, origin=origin)
+
+
+def plan(*parts):
+    return json.dumps({'parts': [dict(ids=ids, kind=kind, meaning=meaning, missing=missing)
+                                 for ids, kind, meaning, missing in parts]}, ensure_ascii=False)
+
+
+class StoreTests(unittest.TestCase):
+    def setUp(self):
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / 'reply.sqlite3'
+        self.store = ReplyStore(self.path, mode='send')
+
+    def test_unread_survives_open_and_process_restart(self):
+        self.store.discover(A, 1)
+        restored = ReplyStore(self.path, mode='send')
+        self.assertEqual(restored.scheduled([B, A]), [A])
+        restored.observe(A, [incoming('旧已读'), incoming('这条未读')])
+        self.assertEqual(restored.pending(A)['incoming'], [incoming('这条未读')])
+
+    def test_startup_baseline_and_late_correction(self):
+        old = [incoming('旧已读')]
+        first = old + [incoming('用昨天那版')]
+        self.store.observe(A, old)
+        self.assertEqual(self.store.scheduled([A]), [])
+        self.store.observe(A, first)
+        token = self.store.pending(A)['id']
+        self.store.observe(A, first + [incoming('最后一版')])
+        saved = self.store.pending(A)
+        self.assertEqual(saved['id'], token)
+        self.assertEqual([r['text'] for r in saved['incoming']], ['用昨天那版', '最后一版'])
+
+    def test_manual_outgoing_does_not_cover_pending_inbound(self):
+        self.store.discover(A, 1)
+        self.store.observe(A, [incoming('第一条')])
+        self.store.observe(A, [incoming('第一条'), outgoing('稍等', None), incoming('第二条')])
+        self.assertEqual([r['text'] for r in self.store.pending(A)['incoming']], ['第一条', '第二条'])
+
+    def test_uncertain_restart_cannot_resend_turn_and_keeps_issue(self):
+        self.store.discover(A, 1)
+        self.store.observe(A, [incoming('帮我审批')])
+        turn = self.store.pending(A)['id']
+        self.store.audit(turn, 'about_to_send', '我晚点亲自回复你', issues=['帮我审批'])
+        restored = ReplyStore(self.path)
+        restored.recover()
+        self.assertEqual(restored.scheduled([A, B]), [])
+        self.assertEqual(restored.review_items(A)[0]['id'], turn)
+        self.assertEqual(restored.open_issues(A)[0]['text'], '帮我审批')
+        restored.discover(B, 1)
+        self.assertEqual(restored.scheduled([A, B]), [B])
+
+    def test_two_identical_new_bubbles_are_retained_with_anchor(self):
+        base = [outgoing('一个不同的锚点')]
+        self.store.observe(A, base)
+        self.store.observe(A, base + [incoming('在吗'), incoming('在吗')])
+        self.assertEqual(len(self.store.pending(A)['incoming']), 2)
+
+    def test_shifted_repetitions_and_missing_unread_count_are_visible(self):
+        self.store.observe(A, [outgoing('锚点'), incoming('在吗'), incoming('在吗')])
+        self.store.discover(A, 1)
+        self.store.observe(A, [incoming('在吗'), incoming('在吗'), incoming('在吗')])
+        self.assertIsNone(self.store.pending(A))
+        self.assertIn('边界', self.store.review_items(A)[0]['reason'])
+        self.store.discover(B, -1)
+        self.store.observe(B, [incoming('分不清旧已读和未读')])
+        self.assertTrue(self.store.review_items(B))
+
+    def test_retry_exhausted_and_independent_issue_resolution(self):
+        self.store.discover(A, 1)
+        self.store.observe(A, [incoming('第一条')])
+        turn = self.store.pending(A)['id']
+        self.store.retry(turn, '暂时不能生成')
+        self.store.retry(turn, '仍不能生成')
+        self.assertEqual(self.store.review_items(A)[0]['id'], turn)
+        self.store.observe(A, [incoming('第一条'), incoming('审批甲'), incoming('审批乙')])
+        turn = self.store.pending(A)['id']
+        self.store.finish(turn, 'preview', '测试', issues=['审批甲', '审批乙'])
+        self.assertTrue(self.store.resolve(A, turn, 0))
+        self.assertEqual([item['text'] for item in self.store.open_issues(A)], ['审批乙'])
+        self.assertFalse(self.store.resolve(A, turn, 0))
+
+    def test_preview_cannot_be_reused_to_send(self):
+        with self.assertRaises(ValueError):
+            ReplyStore(self.path, mode='preview')
+
+
+class ReplyTests(unittest.TestCase):
+    def decide(self, history, rows, *outputs, issues=()):
+        ask = Mock(side_effect=outputs)
+        result = reply_turn.decide(history, rows, issues, NOW, ['行，我看看'], ask, Mock(return_value='[]'))
+        return result, ask
+
+    def test_correction_requested_and_reviewed_against_same_object(self):
+        rows = [incoming('翻译订单记录'), incoming('我说最后一版，标题是订单汇总')]
+        result, ask = self.decide([], rows,
+                                  plan(([1, 2], 'general', '只翻译订单汇总', '')),
+                                  'Order Summary', '{"ok":true}')
+        self.assertEqual(result['text'], 'Order Summary')
+        for call in ask.call_args_list[1:]:
+            self.assertIn('只翻译订单汇总', call.args[0][-1]['content'])
+
+    def test_unresolved_reference_asks_one_targeted_question(self):
+        history = [incoming('比较这两份'), outgoing('初稿和定稿都看过了？', None)]
+        result, _ = self.decide(history, [incoming('刚才那个')],
+                                plan(([1], 'clarify', '指代不清', '初稿还是定稿')),
+                                '你说初稿还是定稿？', '{"ok":true}')
+        self.assertEqual((result['tier'], result['text']), ('clarify', '你说初稿还是定稿？'))
+
+    def test_two_independent_requests_and_later_normal_message(self):
+        result, ask = self.decide([], [incoming('帮我审批'), incoming('PDF 怎么转图片')],
+                                  plan(([1], 'handoff', '本人审批', ''),
+                                       ([2], 'general', 'PDF 转图片', '')),
+                                  '用导出功能选 PNG 就行。', '{"ok":true}')
+        self.assertEqual(result['issues'], ['帮我审批'])
+        self.assertIn('PNG', result['text'])
+        self.assertNotIn('帮我审批', ask.call_args_list[1].args[0][-1]['content'])
+        next_turn, _ = self.decide([], [incoming('另外，二维码是什么')],
+                                  plan(([1], 'general', '二维码定义', '')),
+                                  '一种用图案编码信息的条码。', '{"ok":true}',
+                                  issues=[{'text': '帮我审批'}])
+        self.assertEqual(next_turn['issues'], [])
+        self.assertEqual(next_turn['tier'], 'free')
+
+    def test_exact_title_correction_passes_only_new_request_to_generation(self):
+        rows = [incoming('把标题订单记录翻译成英文'), incoming('我说的是最后一版，标题是订单汇总')]
+        result, ask = self.decide([], rows, 'Order Summary', '{"ok":true}')
+        self.assertEqual(result['text'], 'Order Summary')
+        for call in ask.call_args_list:
+            prompt = call.args[0][-1]['content']
+            self.assertIn('订单汇总', prompt)
+            if prompt.startswith('{'):
+                self.assertNotIn('订单记录', json.loads(prompt)['当前消息'])
+            else:
+                self.assertNotIn('订单记录', prompt)
+
+    def test_missing_final_title_has_a_specific_clarification(self):
+        history = [incoming('把昨天那版的标题订单记录翻译成英文'), outgoing('Order Records')]
+        result, _ = self.decide(history, [incoming('我说的是最后一版')],
+                                '最后一版的标题发我一下？', '{"ok":true}')
+        self.assertEqual(result['tier'], 'clarify')
+
+    def test_singular_reference_with_explicit_alternatives_is_not_expanded(self):
+        history = [incoming('给我两个词'), outgoing('Sunny. / Rainy.')]
+        result, _ = self.decide(history, [incoming('刚才那个，法语怎么说')],
+                                plan(([1], 'general', '两个词都翻译', '')),
+                                '你说 Sunny 还是 Rainy？', '{"ok":true}')
+        self.assertEqual(result['tier'], 'clarify')
+
+    def test_invalid_partition_does_not_silently_lose_item(self):
+        result, _ = self.decide([], [incoming('一'), incoming('二')],
+                                plan(([1], 'general', '一', '')))
+        self.assertEqual(result['status'], 'retry')
+
+
+class ListenerTests(unittest.TestCase):
+    def test_generation_and_delivery_share_real_persistent_batch(self):
+        with TemporaryDirectory() as tmp:
+            store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            store.discover(A, 1)
+            view = {'ok': True, 'source': 'uia', 'quiet': True, 'reason': 'ok',
+                    'msgs': [incoming('翻译你好')]}
+            adapter = Fake()
+            adapter.hwnd = 7
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=adapter),
+                  patch.object(wechat_reply_flow.Listener, '_safe_target', return_value=True),
+                  patch.object(wechat_reply_flow.Listener, '_single_window', return_value=True),
+                  patch.object(wechat_reply_flow.Listener, '_read', return_value=view),
+                  patch.object(adapter, 'unique', return_value=True, create=True),
+                  patch.object(wechat_reply_flow, 'check_responsive', return_value=(True, '')),
+                  patch.object(trigger, 'prepare', return_value=True),
+                  patch.object(trigger, 'remember', return_value=view['msgs']),
+                  patch.object(trigger, 'read_view', return_value=view),
+                  patch.object(wechat_reply_flow.messages, 'wait_quiet', return_value=view),
+                  patch.object(trigger, 'ask_qwen', side_effect=[
+                      plan(([1], 'general', '翻译你好', '')), 'Hello', '{"ok":true}']),
+                  patch.object(send, '_uia_count', side_effect=[0, 1]),
+                  patch.object(send.time, 'sleep'),
+                  patch.object(send, 'press') as press):
+                listener = wechat_reply_flow.Listener(7, [A], store, preview=False)
+                listener.process(A)
+                self.assertEqual(press.call_count, 1)
+            self.assertEqual(store.scheduled([A]), [])
+            store.recover()
+            self.assertEqual(store.review_items(A), [])
+
+
+if __name__ == '__main__':
+    unittest.main()
+

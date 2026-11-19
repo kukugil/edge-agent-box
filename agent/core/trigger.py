@@ -446,10 +446,10 @@ def decide(hwnd: int, title: str, since: float | None = None) -> dict:
         except FileExistsError:
             return status
         except (OSError, ValueError, StopIteration) as exc:
-            print(f'  资料不足接管状态创建失败（{type(exc).__name__}）')
+            print(f'  人工接管状态创建失败（{type(exc).__name__}）')
             return {**status, 'reason': '人工接管状态创建失败', 'read_ok': False}
         number = WHITELIST.index(title) + 1
-        shown = notify('端侧助手：资料不足，需本人处理',
+        shown = notify(f'端侧助手：{d["reason"]}',
                        f'白名单#{number} 已暂停自动回复，请处理后手动恢复。')
         print(f'  白名单#{number} 已转人工，通知启动={shown}')
         return {**status, 'send': True, 'text': reply.LOAN_HANDOFF,
@@ -575,8 +575,14 @@ def run_one(hwnd: int, task: dict, since: float | None = None) -> tuple[str, Sho
             task['seen'] = d.get('seen')
             return SKIP, before
         task['msg'], task['pause'], task['reason'] = d['text'], d['pause'], d['reason']
+        task['reply_snapshot'] = d['seen']
         task['notify'], task['tier'] = d.get('notify', False), d.get('tier', '')
         t1 = time.time()
+    if not reply_snapshot_matches(hwnd, task):
+        # 常驻队列保留 task；清掉失效候选，让下一次从新消息开始。
+        discard_reply(task)
+        task['why'] = '生成回复后消息变化或无法核对'
+        return RETRY, before
     if adapter is None:
         return _run_graph(hwnd, task, before, t0, t1)
     from agent.core.send import deliver
@@ -590,6 +596,20 @@ def run_one(hwnd: int, task: dict, since: float | None = None) -> tuple[str, Sho
     task['why'] = why
     print(f'  发送：{result}，{why}；耗时 准备+开会话+读消息写回复 {t1 - t0:.1f} 秒，发送 {time.time() - t1:.1f} 秒')
     return result, before
+
+
+def discard_reply(task: dict) -> None:
+    """使队列中的任务重新读消息并生成回复。"""
+    task.pop('reply_snapshot', None)
+    task.update(msg=None, pause=False, notify=False, tier='')
+
+
+def reply_snapshot_matches(hwnd: int, task: dict) -> bool | None:
+    """比较实时聊天与生成依据；预先指定正文的任务没有生成快照。"""
+    if 'reply_snapshot' not in task:
+        return True
+    view = read_view(hwnd, task['to'])
+    return msg_key(view['msgs']) == task['reply_snapshot'] if view['ok'] else None
 
 
 def _run_graph(hwnd: int, task: dict, before, t0: float, t1: float) -> tuple[str, Shot | None]:
@@ -921,7 +941,26 @@ def main():
     parser.add_argument('--vision', action='store_true', help='发送只用看图适配器（测兜底那条路）')
     parser.add_argument('--graph', action='store_true', help='用旧的看图主循环发送（对照用）')
     parser.add_argument('--resume-handoff', type=int, metavar='N', help='人工处理后恢复白名单第 N 个会话')
+    parser.add_argument('--reply-flow', choices=('preview', 'send'), help='启用可恢复回复的预览或测试发送')
+    parser.add_argument('--reply-contact', action='append', default=[], help='明确指定白名单测试联系人，可重复')
+    parser.add_argument('--reply-db', type=Path, help='本机隔离回复账本路径')
     args = parser.parse_args()
+    if args.reply_flow:
+        if (args.seconds is None or args.seconds <= 0 or args.clear_journal or args.resume_handoff is not None
+                or args.simulate or args.vision or args.graph or not args.reply_contact
+                or any(name not in WHITELIST or name == SIM_NAME for name in args.reply_contact)
+                or any(sum(norm(other) == norm(name) for other in WHITELIST) != 1
+                       for name in args.reply_contact)
+                or len(set(args.reply_contact)) != len(args.reply_contact)):
+            parser.error('新流程须指定运行时长和唯一、明确的白名单测试联系人，只使用真实微信控件树')
+        from agent.core import wechat_reply_flow
+        wins = graph._wechat_windows()
+        if len(wins) != 1:
+            parser.error('请只打开一个已登录的测试微信主窗口')
+        return wechat_reply_flow.run(wins[0].hwnd, args.seconds, args.reply_contact,
+                                     mode=args.reply_flow, path=args.reply_db)
+    if args.reply_contact or args.reply_db:
+        parser.error('回复测试联系人和账本须和 --reply-flow 一起指定')
     if args.resume_handoff is not None:
         if args.seconds is not None or args.clear_journal or not 1 <= args.resume_handoff <= len(WHITELIST):
             parser.error('请指定有效白名单序号，单独恢复人工接管')

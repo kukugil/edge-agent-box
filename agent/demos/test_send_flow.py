@@ -16,8 +16,10 @@ class Fake:
     kind = 'fake'
 
     def __init__(self, title_ok=True, draft='', focus=True, paste_wrong=False, enter_noop=False,
-                 enter_silent=False, count_none=False, title_flip=False, clear_fails=False):
+                 enter_silent=False, count_none=False, title_flip=False, clear_fails=False, paste_lag=0):
         self.box, self.sent, self.enters = draft, [], 0
+        self.lag = 0
+        self.paste_lag = paste_lag   # 粘贴后前几次读回还是空的（11/18 真机：控件值晚约 0.1 秒）
         self.o = dict(title_ok=title_ok, focus=focus, paste_wrong=paste_wrong, enter_noop=enter_noop,
                       enter_silent=enter_silent, count_none=count_none, title_flip=title_flip,
                       clear_fails=clear_fails)
@@ -30,8 +32,16 @@ class Fake:
         # title_flip：第一次核对对，之后（回车前那次）变了，模拟中途被切走
         return self.o['title_ok'] and not (self.o['title_flip'] and self.title_checks > 1)
 
-    def input_text(self): return self.box
-    def write(self, text): self.box += ('错' if self.o['paste_wrong'] else '') + text; return True
+    def input_text(self):
+        if self.lag:                 # -1 表示一直读不到
+            self.lag -= self.lag > 0
+            return ''
+        return self.box
+
+    def write(self, text):
+        self.box += ('错' if self.o['paste_wrong'] else '') + text
+        self.lag = self.paste_lag
+        return True
 
     def clear(self):
         if not self.o['clear_fails']:
@@ -60,6 +70,9 @@ CASES = [
     ('发前数不清：不粘不按', {'count_none': True}, send.RETRY, 0, ''),
     ('焦点不在输入框：不粘不按', {'focus': False}, send.RETRY, 0, ''),
     ('框里有别人的草稿：不动、交给人', {'draft': '我打了一半'}, send.HUMAN, 0, '我打了一半'),
+    ('粘贴后控件值晚到：等到一致再发', {'paste_lag': 2}, send.OK, 1, ''),
+    # 读回一直是空，程序以为框是空的不会去清；框里真有字时下一轮会按"已有草稿"交给人，不会误发
+    ('粘贴后一直读不到：不按回车', {'paste_lag': -1}, send.RETRY, 0, '测试'),
     ('粘贴读回不对：清掉、重试', {'paste_wrong': True}, send.RETRY, 0, ''),
     ('粘贴读回不对又清不掉：交给人', {'paste_wrong': True, 'clear_fails': True}, send.HUMAN, 0, '错测试'),
     ('回车前会话变了：不按、清掉', {'title_flip': True}, send.RETRY, 0, ''),
@@ -81,6 +94,33 @@ def main():
         print(f"  [{'对' if good else '错'}] {desc}：{got}，按回车 {a.enters} 次，框里剩 {a.box!r}（{why}）")
     print(f'\n{len(CASES) - bad}/{len(CASES)} 对')
     assert bad == 0, '有用例不对'
+
+    from agent.core import trigger
+    old = {'who': 'them', 'kind': 'text', 'text': '几点了？'}
+    new = {**old, 'text': '我问的是明天的安排'}
+    for scenario, want, left in (
+        ('自动旧稿', send.RETRY, ''),
+        ('本人改稿', send.HUMAN, '本人正在写'),
+        ('读屏失败', send.HUMAN, '现在九点'),
+        ('重要事项', send.HUMAN, '现在九点'),
+    ):
+        a = Fake()
+        a.hwnd = 1
+        task = {'to': '测试好友A', 'msg': '现在九点', 'reply_snapshot': trigger.msg_key([old]),
+                'pause': scenario == '重要事项'}
+
+        def read_view(*args):
+            if scenario == '本人改稿':
+                a.box = '本人正在写'
+            return {'ok': scenario != '读屏失败', 'msgs': [old, new]}
+
+        with patch.object(trigger, 'read_view', side_effect=read_view), patch.object(send, 'press') as press:
+            result, _ = send.deliver(a, task, log=lambda *args: None)
+            assert (result, a.box) == (want, left), scenario
+            if want == send.RETRY:
+                assert task['msg'] is None and 'reply_snapshot' not in task
+            press.assert_not_called()
+        print(f'晚到消息 / {scenario}：{result}')
 
 
 if __name__ == '__main__':

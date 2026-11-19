@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.core import reply, trigger
+from agent.tools import history
 
 
 NOW = datetime(2026, 11, 17, 23, 14)
@@ -53,9 +54,10 @@ class TestD16ReplyFlow(unittest.TestCase):
                 decision = reply.write_reply_free(msgs, NOW, [],
                                                   lambda _: '{"kind":"' + kind + '"}')
                 self.assertFalse(decision['send'])
-                self.assertEqual(decision['tier'], 'handoff')
+                self.assertEqual(decision['tier'], 'skip')
+                self.assertFalse(decision['notify'])
 
-    def test_unknown_personal_state_is_handed_to_human(self):
+    def test_unknown_personal_state_does_not_pause(self):
         msgs = [message('them', '你在睡觉吗？')]
         with tempfile.TemporaryDirectory() as directory, \
              patch.dict(os.environ, {'LOCALAPPDATA': directory}), \
@@ -63,10 +65,14 @@ class TestD16ReplyFlow(unittest.TestCase):
              patch.object(trigger.messages, 'wait_quiet', return_value=view(msgs)), \
              patch.object(trigger, 'remember', return_value=msgs), \
              patch.object(trigger, 'ask_qwen', return_value='{"kind":"personal"}'), \
-             patch.object(trigger, 'notify', return_value=True):
+             patch.object(trigger, 'notify') as notify:
             decision = trigger.decide(0, '测试联系人甲')
-        self.assertEqual(decision['tier'], 'handoff')
-        self.assertEqual(decision['text'], reply.LOAN_HANDOFF)
+            marker = history.handoff_path(trigger.history_folder('测试联系人甲', False), '测试联系人甲')
+            self.assertFalse(marker.exists())
+            notify.assert_not_called()
+        self.assertEqual(decision['tier'], 'hold')
+        self.assertFalse(decision['pause'])
+        self.assertEqual(decision['text'], '这个我现在没法确认。')
 
     def test_unattributed_old_arrangement_is_not_evidence(self):
         msgs = [message('us', '九点，先广州后上海'), message('them', '几点去？')]
@@ -79,7 +85,9 @@ class TestD16ReplyFlow(unittest.TestCase):
              patch.object(trigger, 'rank_history', side_effect=AssertionError('来源不明不能检索')), \
              patch.object(trigger, 'notify', return_value=True):
             decision = trigger.decide(0, '测试联系人甲')
-        self.assertEqual(decision['tier'], 'handoff')
+        self.assertEqual(decision['tier'], 'hold')
+        self.assertFalse(decision['pause'])
+        self.assertEqual(decision['text'], '之前的安排我这边确认不了。')
 
     def test_clarification_stops_after_two_useful_rounds(self):
         def ask(prompt):
@@ -98,7 +106,8 @@ class TestD16ReplyFlow(unittest.TestCase):
         third = message('them', '还是那个')
         decision = reply.write_reply_free([first, one, second, two, third], NOW, [], ask, intent='clarify')
         self.assertFalse(decision['send'])
-        self.assertEqual(decision['tier'], 'handoff')
+        self.assertEqual(decision['tier'], 'skip')
+        self.assertFalse(decision['notify'])
 
     def test_clarification_count_survives_history_sync(self):
         def ask(prompt):
@@ -128,7 +137,29 @@ class TestD16ReplyFlow(unittest.TestCase):
             screen.append(message('them', '还是那个'))
             with patch.object(trigger.messages, 'wait_quiet', return_value=view(screen)):
                 decision = trigger.decide(0, '测试联系人甲')
-            self.assertEqual(decision['tier'], 'handoff')
+            self.assertEqual(decision['tier'], 'skip')
+            self.assertFalse(decision['pause'])
+
+    def test_weather_sends_limitation_and_keeps_listening(self):
+        contact = '天气测试'
+        rows = [message('them', '几点了？'),
+                message('us', '现在17点54分', origin='agent', reply_kind='clock'),
+                message('them', '今天天气怎么样？')]
+        screen = view(rows)
+        with tempfile.TemporaryDirectory() as root, \
+             patch.object(trigger, 'history_folder', return_value=Path(root)), \
+             patch.object(trigger, 'WHITELIST', [contact]), \
+             patch.object(trigger, 'load_config', return_value={'reply_mode': 'free'}), \
+             patch.object(trigger.messages, 'wait_quiet', return_value=screen), \
+             patch.object(trigger, 'ask_qwen', side_effect=AssertionError('天气无数据时不应让模型猜')), \
+             patch.object(trigger, 'notify') as notify:
+            weather = trigger.decide(0, contact)
+            self.assertEqual((weather['send'], weather['pause'], weather['text']),
+                             (True, False, '我这边查不到实时天气。'))
+            self.assertFalse(history.handoff_path(Path(root), contact).exists())
+            rows.extend([message('us', weather['text']), message('them', '在吗？')])
+            self.assertEqual(trigger.decide(0, contact)['text'], '怎么啦？')
+            notify.assert_not_called()
 
     def test_simulation_excludes_baseline_and_keeps_repeated_question(self):
         old = [message('us', '几点了？'), message('us', '刚醒')]

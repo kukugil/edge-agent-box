@@ -68,7 +68,7 @@ with patch.object(t, 'WHITELIST', ['测试联系人甲']), patch.object(t.messag
             run = subprocess.run([sys.executable, '-B', '-c', child], env=env,
                                  capture_output=True, text=True, encoding='utf-8', check=True)
             prompt = json.loads(run.stdout.splitlines()[-1])[-1]['content']
-            self.assertIn('对方:我们用青松47', prompt)
+            self.assertIn('对方：我们用青松47', prompt)
             self.assertIn('编号是什么？', prompt)
             self.assertEqual(len(next(root.glob('*.jsonl')).read_text(encoding='utf-8').splitlines()), 3)
 

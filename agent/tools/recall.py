@@ -16,7 +16,7 @@ def find(messages: list[dict], new: list[dict], rank, recent: int, *, covered=No
     if not new:
         return []
     question = '\n'.join(msg['text'] for msg in new if msg['kind'] == 'text')
-    if not re.search(r'[？?]|几点|哪里|在哪|上次|刚才|之前|还记得|什么时候|多少|哪天|什么|怎么|吗|呢', question):
+    if not re.search(r'[？?]|几点|哪里|在哪|上次|刚才|之前|上一版|最后一版|那个|还记得|什么时候|多少|哪天|什么|怎么|吗|呢', question):
         return []
     start = next(i for i, msg in enumerate(messages) if msg is new[0])
     older = [msg for msg in messages[:start] if msg['kind'] == 'text'][-100:]

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.core import trigger
+from agent.core import reply, trigger
 from agent.tools import history
 
 
@@ -14,16 +14,17 @@ CONTACT = '测试联系人甲'
 TONE = ['几点到？', '刚起', '不去了']
 CASES = [
     ('clock_with_old_trip', [('us', '九点，先广州后上海', 'agent')], '几点了？', 'clock'),
-    ('unknown_old_trip', [('us', '九点，先广州后上海', None)], '几点去？', 'handoff'),
+    ('unknown_old_trip', [('us', '九点，先广州后上海', None)], '几点去？', ('hold', 'clarify', 'skip')),
     ('confirmed_old_trip', [('us', '九点，先广州后上海', 'human_confirmed')], '几点去？', 'free'),
     ('confirmed_old_trip_far',
      [('them', '明天几点去？', None), ('us', '九点，先广州后上海', 'human_confirmed')]
      + [('them', f'其他问题{i}', None) for i in range(7)] + [('us', '好', 'agent')],
      '明天几点去？', 'free'),
-    ('personal_status', [], '你在睡觉吗？', 'handoff'),
+    ('personal_status', [], '你在睡觉吗？', 'hold'),
     ('personal_invitation', [], '出去嘛', 'handoff'),
     ('short_ambiguity', [], '1', 'clarify'),
-    ('mixed_clock_and_knowledge', [], '几点了？\n二维码是什么？', 'handoff'),
+    ('mixed_clock_and_knowledge', [], '几点了？\n二维码是什么？', 'skip'),
+    ('live_weather', [], '今天天气怎么样？', 'hold'),
     ('general_knowledge', [], '二维码是什么？用一句话说', 'free'),
 ]
 
@@ -46,8 +47,14 @@ def run_case(name, old, question, expected):
              patch.object(trigger.messages, 'wait_quiet', return_value=view), \
              patch.object(trigger, 'notify', return_value=True):
             decision = trigger.decide(0, CONTACT)
-        if decision['tier'] != expected:
-            raise AssertionError(f'{name}: expected {expected}, got {decision["tier"]}')
+        tier = decision.get('tier')
+        if decision['pause'] and decision['text'] == reply.LOAN_HANDOFF:
+            tier = 'handoff'
+        expected_tiers = (expected,) if isinstance(expected, str) else expected
+        if tier not in expected_tiers:
+            raise AssertionError(f'{name}: expected {expected}, got {tier}')
+        if name == 'unknown_old_trip' and any(x in decision['text'] for x in ('九点', '广州', '上海')):
+            raise AssertionError('答复使用了未经确认的旧行程')
         if name == 'clock_with_old_trip':
             if not decision['text'].startswith('现在') or any(x in decision['text'] for x in ('广州', '上海')):
                 raise AssertionError('当前钟点答复混入了旧行程')
@@ -56,7 +63,7 @@ def run_case(name, old, question, expected):
                 raise AssertionError('只问时间时未准确只答时间')
         if name == 'short_ambiguity' and not decision['text'].endswith(('？', '?')):
             raise AssertionError('含糊短句没有明确提问')
-        return {'case': name, 'expected': expected, 'tier': decision['tier'],
+        return {'case': name, 'expected': expected, 'tier': tier,
                 'text': decision['text']}
 
 

@@ -122,6 +122,25 @@ def _focused(a) -> bool:
     return f is None or f
 
 
+READBACK_WAIT = 1.0   # 粘贴后最多等几秒让输入框的控件值跟上
+READBACK_STEP = 0.1
+
+
+def _read_back(a, msg: str) -> str | None:
+    """输入适配器和刚粘贴的话，输出等待期内最后一次读到的输入框内容。
+
+    为什么要等：11/18 真机实测，Ctrl+V 后微信控件树的值晚约 0.1 秒才更新，
+    粘完马上读 3/3 次是空串，于是正确的回复被当成"读回不一致"拦下。
+    读到一致立刻返回；读到别的字不提前放弃，因为值可能还在变，等满时限再交给调用方判断。
+    """
+    deadline = time.time() + READBACK_WAIT
+    back = a.input_text()
+    while back != msg and time.time() < deadline:
+        time.sleep(READBACK_STEP)
+        back = a.input_text()
+    return back
+
+
 def deliver(a, task: dict, log=print) -> tuple[str, str]:
     """固定流程发一句话。
 
@@ -153,20 +172,40 @@ def deliver(a, task: dict, log=print) -> tuple[str, str]:
         return RETRY, '读不到输入框'
     if draft:
         return HUMAN, f'输入框里已有 {len(draft)} 个字（可能是你的草稿），没动'
+    guarded = 'reply_snapshot' in task
     a.write(msg)
-    back = a.input_text()
+    back = _read_back(a, msg)
     if back != msg:
+        if guarded:
+            return HUMAN, '粘贴后读回不一致，保留输入框'
         # 框原来是空的，现在里面的字只能是我们粘的，清掉再交回
         cleared = a.clear() if back else True
         if not cleared:
             return HUMAN, '粘贴后读回不对，也没清干净，请看一眼输入框'
         return RETRY, '粘贴后读回不是这句，已清空'
     step('已粘贴并读回一致')
+    if guarded:
+        from agent.core.trigger import discard_reply, reply_snapshot_matches
+        fresh = reply_snapshot_matches(a.hwnd, task)
+        if fresh is False and (task.get('whole_reply') or
+                               (not task.get('pause') and task.get('tier') != 'handoff')):
+            # 只清除本轮刚填的原文；无法确认焦点或草稿被改过就交接。
+            if (a.title_ok(title) and a.input_focused() is True
+                    and a.input_text() == msg and a.clear()):
+                discard_reply(task)
+                return RETRY, '发送前收到新消息，已清掉本轮旧稿，下一轮重新判断'
+        if not fresh:
+            return HUMAN, '发送前消息已变化或无法核对，保留输入框'
     # 按回车前最后一刻：会话、焦点、框里的字，三样再查一遍，查完马上按
     if not (a.title_ok(title) and _focused(a) and a.input_text() == msg):
+        if guarded:
+            return HUMAN, '回车前会话、焦点或草稿变化，保留输入框'
         return (RETRY, '回车前会话、焦点或输入框变了，已清空') if a.clear() else \
                (HUMAN, '回车前情况变了，输入框里还有这句没清掉，请看一眼')
     journal.record(task, 'about_to_send')
+    if task.get('whole_reply') and not (a.title_ok(title) and a.input_focused() is True and a.input_text() == msg):
+        journal.record(task, 'fail')
+        return HUMAN, '落盘后会话、焦点或草稿变化，保留输入框'
     press('enter')
     step('已按回车')
     for _ in range(CHECK_TRIES):
@@ -176,7 +215,7 @@ def deliver(a, task: dict, log=print) -> tuple[str, str]:
             journal.record(task, 'ok')
             step('核对到这条已发出')
             return OK, '消息列表多了这一句'
-    if a.input_text() == msg:
+    if not guarded and a.input_text() == msg:
         journal.record(task, 'fail')
         return (RETRY, '回车没发出去，字还在框里，已清空') if a.clear() else \
                (HUMAN, '回车没发出去，字还在框里，请看一眼')
