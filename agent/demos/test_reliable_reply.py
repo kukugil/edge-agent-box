@@ -226,6 +226,47 @@ class ListenerTests(unittest.TestCase):
                 self.assertIsNone(store.pending(name))
                 self.assertEqual(store.review_items(name), [])
 
+    def test_simulation_only_touches_file_transfer_when_mixed_with_friend(self):
+        """好友和文件传输助手一起跑：模拟改标只作用于文件传输助手，好友角标照常登记。"""
+        name = trigger.SIM_NAME
+        saved = dict(trigger.SIM)
+        self.addCleanup(lambda: trigger.SIM.update(saved))
+        sim_old = [dict(who='us', kind='text', at=NOW, text='旧话')]
+        sim_new = sim_old + [dict(who='us', kind='text', at=NOW, text='手机来的')]
+        friend = [outgoing('上次的'), incoming('好友的新话'), outgoing('我自己发的', origin=None)]
+        screens = {name: [sim_old, sim_old, sim_new], A: [friend]}
+        current = {'title': name}
+
+        def read_chat(hwnd, title, **kwargs):
+            return {'ok': True, 'source': 'uia', 'reason': 'ok',
+                    'msgs': [dict(m) for m in screens[title].pop(0)]}
+        with TemporaryDirectory() as tmp:
+            store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            adapter = Mock(unique=Mock(return_value=True), selected=Mock(return_value=True))
+            rows = [{'title': A, 'dot_only': False, 'box': (0, 0, 1, 1)},
+                    {'title': name, 'dot_only': False, 'box': (0, 0, 1, 1)}]
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=adapter),
+                  patch.object(wechat_reply_flow.Listener, '_single_window', return_value=True),
+                  patch.object(trigger, 'WHITELIST', [A, name]),
+                  patch.object(trigger, 'open_title', side_effect=lambda shot: current['title']),
+                  patch.object(wechat_reply_flow, 'find_unread_rows', return_value=rows),
+                  patch.object(wechat_reply_flow, '_badge_count', return_value=1),
+                  patch.object(trigger.messages, 'read_chat', side_effect=read_chat)):
+                print(trigger.sim_start(7))
+                listener = wechat_reply_flow.Listener(7, [A, name], store, preview=False)
+                listener._collect(None)                      # 停在文件传输助手：建基线
+                friend_view = listener._read(A)
+                # 好友会话不经模拟改标：对方仍是 them，本人手发的仍是 us
+                self.assertEqual([m['who'] for m in friend_view['msgs']], ['us', 'them', 'us'])
+                self.assertIsNone(friend_view['msgs'][2].get('origin'))
+                listener._collect(None)                      # 手机来信
+                self.assertEqual([m['text'] for m in store.pending(name)['incoming']], ['手机来的'])
+            with store.transaction() as db:
+                unread = {row['contact']: row['unread'] for row in db.execute('SELECT contact,unread FROM session')}
+            from agent.tools.reply_store import contact_key
+            self.assertEqual(unread[contact_key(A)], 1)      # 好友角标照常登记
+            self.assertIsNone(unread[contact_key(name)])     # 文件传输助手角标不作数
+
     def test_generation_and_delivery_share_real_persistent_batch(self):
         with TemporaryDirectory() as tmp:
             store = ReplyStore(Path(tmp) / 'reply.db', mode='send')

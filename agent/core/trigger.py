@@ -981,9 +981,9 @@ def main():
     if args.reply_flow:
         if (args.seconds is None or args.seconds <= 0 or args.clear_journal or args.resume_handoff is not None
                 or args.vision or args.graph or not args.reply_contact
-                # 文件传输助手只能单独、且以模拟方式接入：不模拟时它的气泡全是我方，模拟时不能混进真实好友
-                or (args.simulate or SIM_NAME in args.reply_contact) and args.reply_contact != [SIM_NAME]
-                or SIM_NAME in args.reply_contact and not args.simulate
+                # 文件传输助手必须以模拟方式接入（不模拟时它的气泡全是我方），模拟也只对它生效；
+                # 可以和真实好友一起跑：好友会话仍按头像和角标判断（11/18 用户只找到一位测试好友）
+                or args.simulate != (SIM_NAME in args.reply_contact)
                 or any(name not in WHITELIST for name in args.reply_contact)
                 or any(sum(norm(other) == norm(name) for other in WHITELIST) != 1
                        for name in args.reply_contact)
