@@ -189,6 +189,45 @@ class ReplyTests(unittest.TestCase):
 
 
 class ListenerTests(unittest.TestCase):
+    def test_minimized_wechat_waits_instead_of_stopping(self):
+        """11/19 真机：人切窗时误把微信最小化，监听跟着退出。最小化要等；换成别的窗口仍停。"""
+        from agent.tools.window import WindowInfo
+        main = WindowInfo(7, '微信', 'Qt', 1, True, False)
+        mini = WindowInfo(7, '微信', 'Qt', 1, True, True)
+        other = WindowInfo(8, '微信', 'Qt', 1, True, False)
+        now = [0]
+
+        def tick():
+            now[0] += 1
+            return now[0]
+        with TemporaryDirectory() as tmp:
+            store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            logs = []
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=Mock(unique=Mock(return_value=True))),
+                  patch.object(wechat_reply_flow.time, 'monotonic', side_effect=tick),
+                  patch.object(wechat_reply_flow.time, 'sleep'),
+                  patch.object(trigger, 'prepare', return_value=True),
+                  patch.object(wechat_reply_flow, 'check_responsive', return_value=(True, '')),
+                  patch.object(wechat_reply_flow, 'capture_window', return_value=None),
+                  # 第 2、3 轮最小化（大窗口列表为空），之后恢复
+                  patch.object(wechat_reply_flow.graph, '_wechat_windows',
+                               side_effect=lambda: [] if now[0] in (2, 3) else [main]),
+                  patch.object(wechat_reply_flow, 'find_windows', return_value=[mini])):
+                wechat_reply_flow.Listener(7, ['甲'], store, preview=False, log=logs.append).run(5)
+            self.assertEqual(logs, ['微信被最小化，等它恢复到前台再看', '微信回到前台，继续监听'])
+            now[0] = 0
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=Mock(unique=Mock(return_value=True))),
+                  patch.object(wechat_reply_flow.time, 'monotonic', side_effect=tick),
+                  patch.object(wechat_reply_flow.time, 'sleep'),
+                  patch.object(trigger, 'prepare', return_value=True),
+                  patch.object(wechat_reply_flow, 'check_responsive', return_value=(True, '')),
+                  # 主窗口换成了另一个：不是最小化，必须停
+                  patch.object(wechat_reply_flow.graph, '_wechat_windows',
+                               side_effect=lambda: [main] if now[0] <= 1 else [other]),
+                  patch.object(wechat_reply_flow, 'find_windows', return_value=[mini, other])):
+                with self.assertRaises(RuntimeError):
+                    wechat_reply_flow.Listener(7, ['甲'], store, preview=False, log=logs.append).run(4)
+
     def test_file_transfer_simulation_does_not_answer_own_reply(self):
         """模拟模式：角标不作数、旧气泡算边界；手机来的算来信，程序自己发的回复不再登记成来信。"""
         def bubble(text):

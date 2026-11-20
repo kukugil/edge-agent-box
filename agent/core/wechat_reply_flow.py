@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agent.core import graph, messages, reply_turn, send, trigger
-from agent.tools import capture_window, check_responsive, norm, ocr
+from agent.tools import capture_window, check_responsive, find_windows, norm, ocr
 from agent.tools.reply_store import ReplyStore
 from agent.tools.unread import bell_state, find_unread_rows
 from agent.tools.wechat_uia import WeChatUIA
@@ -58,6 +58,14 @@ class Listener:
     def _single_window(self):
         """双开或主窗口变化时，停止操作原来绑定的窗口。"""
         return [window.hwnd for window in graph._wechat_windows()] == [self.hwnd]
+
+    def _minimized(self):
+        """只有绑定的主窗口被最小化、也没有别的微信大窗口时，算作人临时收起，可以等。
+        11/19 好友测试三次都是人切窗时误把微信最小化（多半是点了任务栏图标），程序跟着退出。
+        等的时候不去还原：还原等于抢前台，人可能正在用别的窗口。"""
+        return not graph._wechat_windows() and any(
+            w.hwnd == self.hwnd and w.visible and w.minimized
+            for w in find_windows(title='微信', class_prefix='Qt'))
 
     def _safe_target(self, title):
         """发送前需要唯一会话行、选中状态以及可读标题一致。"""
@@ -176,10 +184,16 @@ class Listener:
             raise RuntimeError('未找到可唯一定位的白名单测试会话')
         while time.monotonic() < deadline:
             if not self._single_window():
-                raise RuntimeError('无法确认唯一且可响应的微信主窗口')
+                if not self._minimized():
+                    raise RuntimeError('无法确认唯一且可响应的微信主窗口')
+                if not self.waiting:
+                    self.log('微信被最小化，等它恢复到前台再看')
+                self.waiting = True
+                time.sleep(trigger.POLL)
+                continue
             ok, why = check_responsive(self.hwnd)
             if not ok:
-                # 只是不在前台（人在用别的窗口）就等，不截图也不动微信；隐藏、最小化、卡死仍停
+                # 只是不在前台（人在用别的窗口）就等，不截图也不动微信；隐藏、卡死仍停（最小化在上面等）
                 if '前台' not in why:
                     raise RuntimeError('无法确认唯一且可响应的微信主窗口：' + why)
                 if not self.waiting:
