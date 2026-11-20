@@ -214,8 +214,11 @@ class Listener:
             self.store.retry(turn['id'], reason)
         self.log(f'批次 #{turn["id"]} {outcome} · {reason}')
 
-    def run(self, seconds):
-        """定时重扫，角标和打开会话各自有变化时均会复查。"""
+    def run(self, seconds, stop=lambda: False):
+        """定时重扫，角标和打开会话各自有变化时均会复查。
+
+        stop：托盘点"停止"时变成 True。只在两轮之间查：一轮里的发送要么做完要么没开始，不会把稿子留在输入框。
+        """
         deadline = time.monotonic() + seconds
         self.store.recover()
         # 先 prepare 把微信拉到前面再核对能否响应，和旧入口一致；反过来做，人在别的窗口时一启动就失败
@@ -224,6 +227,9 @@ class Listener:
                 or not any(self.adapter.unique(title) for title in self.titles)):
             raise RuntimeError('未找到可唯一定位的白名单测试会话')
         while time.monotonic() < deadline:
+            if stop():
+                self.log('已停止监听')
+                return
             minimized = not self._single_window()
             if minimized and not self._minimized():
                 raise RuntimeError('无法确认唯一且可响应的微信主窗口')
@@ -273,10 +279,10 @@ class Listener:
                 time.sleep(trigger.POLL)
 
 
-def run(hwnd, seconds, titles, *, mode, path=None):
+def run(hwnd, seconds, titles, *, mode, path=None, stop=lambda: False):
     """受控演练入口。两个模式都需要显式指定测试会话。"""
     path = Path(path) if path else database_path(mode)
     with listener_lock(database_path(mode)):
         store = ReplyStore(path, mode=mode)
-        Listener(hwnd, titles, store, preview=mode == 'preview').run(seconds)
+        Listener(hwnd, titles, store, preview=mode == 'preview').run(seconds, stop)
 

@@ -15,11 +15,12 @@ if find_spec('PySide6') is None:
 from PySide6.QtCore import QLockFile, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QTextDocument, QTextImageFormat
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QMainWindow, QMenu, QPushButton, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from agent.core import reply, trigger
+from agent.desktop_runner import ModelDialog, Runner
 from agent.core.wechat_reply_flow import database_path
 from agent.tools.reply_store import ReplyStore
 from agent.tools import history
@@ -44,6 +45,10 @@ QPushButton { background: #2f5cdd; color: white; border: 1px solid #2f5cdd;
 QPushButton:hover { background: #234dc5; }
 QPushButton:focus { border: 2px solid #152d76; }
 QPushButton:disabled { background: #edf0f5; color: #6c7380; border-color: #edf0f5; }
+QPushButton#plain { background: white; color: #2f5cdd; border: 1px solid #c9d3ea; }
+QPushButton#plain:hover { background: #eef2fb; }
+QLabel#run { font-weight: bold; }
+QLabel#recent { color: #606875; font-size: 12px; }
 """
 
 
@@ -80,6 +85,7 @@ class Inbox(QMainWindow):
 
     def __init__(self, contacts, app, reply_db=None):
         super().__init__()
+        self.app = app
         self.contacts = contacts
         self.reply_db = reply_db
         self.items = {}
@@ -103,6 +109,23 @@ class Inbox(QMainWindow):
         nav.setContentsMargins(20, 25, 16, 20)
         nav.setSpacing(16)
         nav.addWidget(text_label('端侧盒子', 'brand'))
+        # 监听开关放最上面：托盘是唯一入口，开始/停止、看状态都在这里（11/19 用户定）
+        self.run_state = text_label('未在监听', 'run')
+        self.run_state.setWordWrap(True)
+        nav.addWidget(self.run_state)
+        self.toggle = QPushButton('开始自动回复')
+        self.toggle.clicked.connect(self.toggle_listen)
+        nav.addWidget(self.toggle)
+        self.mail = QCheckBox('QQ 邮件（还没接入）')
+        self.mail.setEnabled(False)
+        nav.addWidget(self.mail)
+        self.recent = text_label('', 'recent')
+        self.recent.setWordWrap(True)
+        nav.addWidget(self.recent)
+        settings = QPushButton('模型设置')
+        settings.setObjectName('plain')
+        settings.clicked.connect(self.open_settings)
+        nav.addWidget(settings)
         self.count = text_label('待我处理', 'secondary')
         nav.addWidget(self.count)
         self.list = QListWidget()
@@ -146,8 +169,11 @@ class Inbox(QMainWindow):
 
         self.tray = QSystemTrayIcon(box_icon(), self)
         self.menu = QMenu(self)
-        self.menu.addAction('打开待我处理', self.open_window)
-        self.menu.addAction('退出端侧盒子窗口', app.quit)
+        self.menu.addAction('打开端侧盒子', self.open_window)
+        self.listen_action = self.menu.addAction('开始自动回复', self.toggle_listen)
+        self.menu.addAction('退出端侧盒子', self.quit)
+        self.runner = Runner(self)
+        self.runner.changed.connect(self.show_runner)
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self.on_tray)
         self.tray.show()
@@ -155,6 +181,35 @@ class Inbox(QMainWindow):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(900)
         self.refresh()
+        self.show_runner()
+
+    def toggle_listen(self):
+        if self.runner.running():
+            self.runner.stop()
+        else:
+            self.runner.start()
+
+    def show_runner(self):
+        running = self.runner.running()
+        self.run_state.setText(self.runner.status)
+        label = '停止自动回复' if running else '开始自动回复'
+        self.toggle.setText(label)
+        self.toggle.setEnabled(not self.runner.stopping)
+        self.listen_action.setText(label)
+        self.listen_action.setEnabled(not self.runner.stopping)
+        self.recent.setText(chr(10).join(self.runner.recent))
+        self.tray.setToolTip(f'端侧盒子 · {self.runner.status} · {self.tray_count or 0} 项待处理')
+
+    def open_settings(self):
+        ModelDialog(self).exec()
+
+    def quit(self):
+        """先让监听停下（正在发的那条发完），再退出托盘，不留下没人管的监听进程。"""
+        if self.runner.running():
+            self.open_window()
+            self.runner.stop(then=self.app.quit)
+        else:
+            self.app.quit()
 
     def on_tray(self, reason):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
@@ -223,7 +278,7 @@ class Inbox(QMainWindow):
         if count != self.tray_count:
             self.tray_count = count
             self.tray.setIcon(box_icon(count))
-            self.tray.setToolTip(f'端侧盒子 · {count} 项待处理')
+            self.tray.setToolTip(f'端侧盒子 · {self.runner.status} · {count} 项待处理')
         self.render()
 
     def reply_items(self, store, name):
@@ -334,7 +389,10 @@ def main():
     parser.add_argument('--tray', action='store_true', help='启动时只显示托盘图标')
     parser.add_argument('--file-transfer-only', action='store_true', help='只显示文件传输助手的模拟事项')
     parser.add_argument('--reply-db', type=Path, help='显示另一个测试回复账本中的事项')
+    parser.add_argument('--listen', action='store_true', help='打开托盘后立刻开始自动回复')
     args = parser.parse_args()
+    if args.listen and args.reply_db:
+        parser.error('--listen 写的是默认账本，不能和 --reply-db 一起用，否则托盘看的和监听写的不是同一本')
     app = QApplication([sys.argv[0]])
     app.setQuitOnLastWindowClosed(False)
     if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -350,6 +408,8 @@ def main():
     window = Inbox(contacts, app, args.reply_db)
     if not args.tray:
         window.open_window()
+    if args.listen:
+        window.runner.start()
     sys.exit(app.exec())
 
 
