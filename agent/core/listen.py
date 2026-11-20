@@ -2,10 +2,13 @@
 
 做的事：把微信切到前台 → 打开白名单里的第一个会话 → 开文件传输助手模拟（白名单里有它时）→ 交给新流程监听。
 停止：托盘创建 --stop-file 指定的文件，监听在两轮之间看到就停，正在发的那条会发完再停。
-用法：python -m agent.core.listen [--hours 12] [--stop-file 路径]
+加 --mail 同时盯 QQ 邮箱：邮箱要开在带无障碍参数的专用 Chrome 里（托盘"打开邮箱窗口"会这样开）。
+用法：python -m agent.core.listen [--hours 12] [--stop-file 路径] [--mail]
 """
 import argparse
+import ctypes
 import sys
+from ctypes import wintypes
 import time
 from pathlib import Path
 
@@ -67,12 +70,32 @@ def start_simulation(hwnd, stop):
     return False
 
 
+def find_mail(stop, tries=5, wait=2.0):
+    """找开着 QQ 邮箱的 Chrome 窗口，交回句柄；没有交回 None。
+
+    最小化的先还原但不抢焦点（SW_SHOWNOACTIVATE）：最小化时网页内容读不到，就发现不了新邮件。
+    """
+    from agent.tools.web import find_mail_window
+    for _ in range(tries):
+        if stop():
+            return None
+        hwnd = find_mail_window()
+        if hwnd:
+            return hwnd
+        for w in find_windows(class_prefix='Chrome_WidgetWin'):
+            if w.visible and w.minimized and ('QQ邮箱' in w.title or '封新邮件' in w.title):
+                ctypes.windll.user32.ShowWindow(wintypes.HWND(w.hwnd), 4)
+        time.sleep(wait)
+    return None
+
+
 def main(argv=None):
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description='启动微信自动回复监听')
     parser.add_argument('--hours', type=float, default=12, help='最长运行小时数')
     parser.add_argument('--stop-file', type=Path, help='这个文件出现时停止监听')
+    parser.add_argument('--mail', action='store_true', help='同时自动回复 QQ 邮箱')
     args = parser.parse_args(argv)
     stop = (lambda: args.stop_file.exists()) if args.stop_file else (lambda: False)
 
@@ -89,9 +112,18 @@ def main(argv=None):
     if trigger.SIM_NAME in titles and not start_simulation(hwnd, stop):
         say('已停止' if stop() else '已停止：文件传输助手模拟没开成')
         return 0 if stop() else 2
-    say('状态：监听中')
+    mail_hwnd = None
+    if args.mail:
+        allowed = trigger.load_allowed_mail()
+        mail_hwnd = find_mail(stop) if allowed else None
+        if not allowed:
+            say('邮箱没接入：本机联系人文件里没有 allowed_mail（测试邮箱）')
+        elif mail_hwnd is None:
+            say('邮箱没接入：没找到开着 QQ 邮箱的专用 Chrome 窗口，先在托盘里点"打开邮箱窗口"并登录')
+    say('状态：监听中' + ('（微信 + 邮箱）' if mail_hwnd else ''))
     try:
-        wechat_reply_flow.run(hwnd, args.hours * 3600, titles, mode='send', stop=stop)
+        wechat_reply_flow.run(hwnd, args.hours * 3600, titles, mode='send', stop=stop,
+                              mail_hwnd=mail_hwnd, allowed_mail=trigger.load_allowed_mail() if mail_hwnd else ())
     except RuntimeError as exc:
         say(f'已停止：{exc}')
         return 2

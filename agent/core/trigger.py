@@ -42,6 +42,11 @@ CONTACTS = Path(__file__).resolve().parent.parent / 'test_contacts.local.json'
 WHITELIST = json.loads(CONTACTS.read_text(encoding='utf-8'))['allowed_chats']
 
 
+def load_allowed_mail() -> list[str]:
+    """测试邮箱白名单（本机联系人文件的 allowed_mail）。没配就交回空列表，邮件那一路不开。"""
+    return list(json.loads(CONTACTS.read_text(encoding='utf-8')).get('allowed_mail', []))
+
+
 # ---------- 诊断（11/8 查“回复之后第一条偶尔不出角标”，查清后可以删） ----------
 
 HEARTBEAT = 10    # 等门铃时每隔几秒打一行现状

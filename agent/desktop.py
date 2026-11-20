@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from agent.core import reply, trigger
-from agent.desktop_runner import ModelDialog, Runner
+from agent.core.mail_flow import MAIL
+from agent.desktop_runner import ModelDialog, Runner, open_mail_window
 from agent.core.wechat_reply_flow import database_path
 from agent.tools.reply_store import ReplyStore
 from agent.tools import history
@@ -116,9 +117,15 @@ class Inbox(QMainWindow):
         self.toggle = QPushButton('开始自动回复')
         self.toggle.clicked.connect(self.toggle_listen)
         nav.addWidget(self.toggle)
-        self.mail = QCheckBox('QQ 邮件（还没接入）')
-        self.mail.setEnabled(False)
+        self.mail = QCheckBox('同时回复 QQ 邮箱')
+        self.mail.setChecked(bool(trigger.load_allowed_mail()))
+        self.mail.setEnabled(bool(trigger.load_allowed_mail()))
+        self.mail.setToolTip('要先点"打开邮箱窗口"并登录测试邮箱；改了要重新开始才生效')
         nav.addWidget(self.mail)
+        mail_window = QPushButton('打开邮箱窗口')
+        mail_window.setObjectName('plain')
+        mail_window.clicked.connect(lambda: self.feedback.setText(open_mail_window()))
+        nav.addWidget(mail_window)
         self.recent = text_label('', 'recent')
         self.recent.setWordWrap(True)
         nav.addWidget(self.recent)
@@ -187,7 +194,7 @@ class Inbox(QMainWindow):
         if self.runner.running():
             self.runner.stop()
         else:
-            self.runner.start()
+            self.runner.start(['--mail'] if self.mail.isChecked() else [])
 
     def show_runner(self):
         running = self.runner.running()
@@ -195,6 +202,7 @@ class Inbox(QMainWindow):
         label = '停止自动回复' if running else '开始自动回复'
         self.toggle.setText(label)
         self.toggle.setEnabled(not self.runner.stopping)
+        self.mail.setEnabled(not running and bool(trigger.load_allowed_mail()))
         self.listen_action.setText(label)
         self.listen_action.setEnabled(not self.runner.stopping)
         self.recent.setText(chr(10).join(self.runner.recent))
@@ -405,11 +413,12 @@ def main():
     contacts = [(name, False) for name in trigger.WHITELIST] if not args.file_transfer_only else []
     if trigger.SIM_NAME in trigger.WHITELIST:
         contacts.append((trigger.SIM_NAME, True))
+    contacts.append((MAIL, False))     # 邮件的转人工和待核对也记在同一本账里
     window = Inbox(contacts, app, args.reply_db)
     if not args.tray:
         window.open_window()
     if args.listen:
-        window.runner.start()
+        window.runner.start(['--mail'] if window.mail.isChecked() else [])
     sys.exit(app.exec())
 
 

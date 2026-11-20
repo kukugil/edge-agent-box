@@ -208,6 +208,15 @@ class ReplyStore:
                            (_pack(_unpack(previous['incoming']) + aligned), previous['id']))
             return how
 
+    def enqueue(self, title, rows):
+        """直接登记一批来信（邮件用：一封信就是一批，不用按屏幕对齐）。会话已锁时不登记，交回 None。"""
+        key = contact_key(title)
+        with self.transaction() as db:
+            db.execute('INSERT OR IGNORE INTO session(contact) VALUES(?)', (key,))
+            if db.execute('SELECT blocked FROM session WHERE contact=?', (key,)).fetchone()['blocked']:
+                return None
+            return self._insert(db, key, rows)
+
     def pending(self, title):
         """返回已经登记、尚未覆盖的最早批次。"""
         with self.transaction() as db:

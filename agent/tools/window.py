@@ -57,8 +57,11 @@ def find_windows(title: str | None = None, class_prefix: str | None = None,
         c = _text(user32.GetClassNameW, hwnd)
         if ((title is None or t == title) and (class_prefix is None or c.startswith(class_prefix))
                 and (pid is None or _pid(hwnd) == pid)):
+            # 句柄要包成 HWND 再传：裸 int 按 32 位 int 传，大于 2^31 的句柄会报 OverflowError，
+            # 这个窗口就被悄悄漏掉（11/19 新开的 Chrome 窗口就这样找不到）
+            h = wintypes.HWND(hwnd)
             found.append(WindowInfo(hwnd, t, c, _pid(hwnd),
-                                    bool(user32.IsWindowVisible(hwnd)), bool(user32.IsIconic(hwnd))))
+                                    bool(user32.IsWindowVisible(h)), bool(user32.IsIconic(h))))
         return True
 
     user32.EnumWindows(cb, 0)

@@ -65,7 +65,8 @@ class Runner(QObject):
     def running(self) -> bool:
         return self.process is not None and self.process.state() != QProcess.ProcessState.NotRunning
 
-    def start(self) -> None:
+    def start(self, extra=()) -> None:
+        """extra：附加给监听的参数，比如 ['--mail']。"""
         if self.running():
             return
         self.stop_file.unlink(missing_ok=True)
@@ -87,7 +88,7 @@ class Runner(QObject):
         process.errorOccurred.connect(self._error)
         self.process = process
         self.status = '正在启动'
-        process.start(self.program, [*self.args, '--stop-file', str(self.stop_file)])
+        process.start(self.program, [*self.args, '--stop-file', str(self.stop_file), *extra])
         self.changed.emit()
 
     def stop(self, then=None) -> None:
@@ -152,6 +153,28 @@ class Runner(QObject):
         callbacks, self.after_stop = self.after_stop, []
         for callback in callbacks:
             callback()
+
+
+def open_mail_window() -> str:
+    """用专用配置打开 Chrome 里的 QQ 邮箱。交回一句给人看的结果。
+
+    为什么单独一个配置：网页内容要带 --force-renderer-accessibility 才读得到，日常用的 Chrome 没带；
+    另两个参数让窗口被挡住时也照常刷新。登录状态留在这个配置里，下次打开不用再登录。
+    """
+    chrome = None
+    for base in (os.getenv('LOCALAPPDATA'), os.getenv('PROGRAMFILES'), os.getenv('PROGRAMFILES(X86)')):
+        path = Path(base or '') / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'
+        if base and path.is_file():
+            chrome = path
+            break
+    if chrome is None:
+        return '没找到 Chrome，请先安装 Chrome'
+    profile = local_dir() / 'chrome-agent'
+    ok = QProcess.startDetached(str(chrome), [f'--user-data-dir={profile}', '--force-renderer-accessibility',
+                                              '--disable-features=CalculateNativeWinOcclusion',
+                                              '--disable-backgrounding-occluded-windows', '--no-first-run',
+                                              'https://mail.qq.com'])
+    return '已打开邮箱窗口：第一次要登录测试邮箱' if ok else '邮箱窗口没能打开'
 
 
 class Bridge(QObject):

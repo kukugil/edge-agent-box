@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent.core import graph, messages, reply_turn, send, trigger
 from agent.tools import capture_window, check_responsive, find_windows, idle_seconds, norm, ocr
+from agent.tools.window import _foreground_is
 from agent.tools.reply_store import ReplyStore
 from agent.tools.unread import bell_state, find_unread_rows
 from agent.tools.wechat_uia import WeChatUIA
@@ -19,6 +20,9 @@ IDLE_WAKE = 60
 RETRY_BACKOFF = (5, 15, 30, 60)
 # 会话行预览多久查一次：每次要走一遍控件树
 PREVIEW_EVERY = 2.0
+# 前台是程序自己刚用过的窗口（处理完邮件停在邮箱、处理完微信停在微信）时，键鼠停这么久就可以接着用；
+# 不能按 IDLE_WAKE 等：程序自己的点击也会刷新"最近一次键鼠"，邮件和微信轮流时会白等 60 秒
+AGENT_IDLE = 3
 
 
 def database_path(mode):
@@ -50,8 +54,9 @@ def _badge_count(shot, row):
 class Listener:
     """连接现有微信适配器、回复内核和待处理账本。"""
 
-    def __init__(self, hwnd, titles, store, *, preview, log=print):
+    def __init__(self, hwnd, titles, store, *, preview, log=print, mail=None):
         self.hwnd = hwnd
+        self.mail = mail       # MailWatcher 或 None：邮件和微信在同一个循环里轮流用屏幕
         self.titles = titles
         self.store = store
         self.preview = preview
@@ -251,10 +256,13 @@ class Listener:
                     self._collect(shot)
                     self.last_view = observed
             self._poll_previews()
+            if self.mail is not None:
+                self.mail.poll()
             scheduled = self._ready(self.store.scheduled(self.titles))
             if scheduled and not front:
                 idle = idle_seconds()
-                if idle < IDLE_WAKE or time.monotonic() < self.next_wake:
+                ours = self.mail is not None and _foreground_is(self.mail.hwnd)
+                if idle < (AGENT_IDLE if ours else IDLE_WAKE) or time.monotonic() < self.next_wake:
                     if not self.waiting:
                         where = '被最小化' if minimized else '不在前台'
                         self.log(f'有待回复，微信{where}：等键鼠停 {IDLE_WAKE} 秒后再接管')
@@ -275,14 +283,34 @@ class Listener:
                     self.previews[title] = text   # 自己刚发的回复改了预览，不能再当门铃
                 # 轮转避免同一联系人连发或失败时挤掉其他人的队列。
                 self.titles = [name for name in self.titles if name != title] + [title]
+            elif self.mail is not None and self.mail.has_work() and self._mail_turn():
+                self.mail.process()
             else:
                 time.sleep(trigger.POLL)
 
+    def _mail_turn(self):
+        """轮到邮件时能不能用屏幕：前台是微信或邮箱（程序自己的）且键鼠停了 AGENT_IDLE 秒，
+        或者前台是别的窗口但键鼠停了 IDLE_WAKE 秒。人正在用电脑就等。"""
+        idle = idle_seconds()
+        ours = _foreground_is(self.hwnd) or _foreground_is(self.mail.hwnd)
+        if idle >= (AGENT_IDLE if ours else IDLE_WAKE):
+            if self.waiting:
+                self.waiting = False
+            return True
+        if not self.waiting:
+            self.log(f'有待回复的邮件：等键鼠停 {AGENT_IDLE if ours else IDLE_WAKE} 秒后再接管')
+        self.waiting = True
+        return False
 
-def run(hwnd, seconds, titles, *, mode, path=None, stop=lambda: False):
-    """受控演练入口。两个模式都需要显式指定测试会话。"""
+
+def run(hwnd, seconds, titles, *, mode, path=None, stop=lambda: False, mail_hwnd=None, allowed_mail=()):
+    """受控演练入口。两个模式都需要显式指定测试会话。mail_hwnd 给了就同时盯 QQ 邮箱（只在发送模式）。"""
     path = Path(path) if path else database_path(mode)
     with listener_lock(database_path(mode)):
         store = ReplyStore(path, mode=mode)
-        Listener(hwnd, titles, store, preview=mode == 'preview').run(seconds, stop)
+        mail = None
+        if mail_hwnd and mode == 'send':
+            from agent.core.mail_flow import MailWatcher
+            mail = MailWatcher(mail_hwnd, store, allowed_mail)
+        Listener(hwnd, titles, store, preview=mode == 'preview', mail=mail).run(seconds, stop)
 
