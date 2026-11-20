@@ -100,7 +100,7 @@ class TestRefresh(unittest.TestCase):
                 self.assertEqual(watcher.poll(), 0)         # 标题响了，列表还是旧的
                 self.assertTrue(watcher.has_work())
                 watcher.process()                           # 点「收件箱」刷新，再读一次
-            watcher._folder.assert_called_once_with('收件箱')
+            self.assertEqual([c.args[0] for c in watcher._folder.call_args_list], ['已发送', '收件箱'])   # 切走再切回才刷新
             self.assertEqual(store.pending(MAIL)['incoming'][0]['subject'], NEW[2])
             self.assertFalse(watcher.refresh)
             with patch.object(mail_flow.time, 'monotonic', return_value=watcher.next_refresh + 10):
