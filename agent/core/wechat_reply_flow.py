@@ -307,12 +307,13 @@ class Listener:
     def _mail_turn(self):
         """轮到邮件时能不能用屏幕：屏幕还在程序手里，或者键鼠停了 IDLE_WAKE 秒。人正在用电脑就等。"""
         idle = idle_seconds()
+        # 用自己的标记：和微信那边共用 waiting 时，两边每轮互相翻转，日志每秒刷两行（11/19 真机）
         if idle >= IDLE_WAKE or self._ours(idle):
-            self.waiting = False
+            self.mail_waiting = False
             return True
-        if not self.waiting:
+        if not getattr(self, 'mail_waiting', False):
             self.log(f'有待回复的邮件：等键鼠停 {IDLE_WAKE} 秒后再接管')
-        self.waiting = True
+        self.mail_waiting = True
         return False
 
 

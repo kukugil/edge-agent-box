@@ -185,6 +185,13 @@ class TestMailTurn(unittest.TestCase):
             listener.handover = None
             with patch.object(wechat_reply_flow, 'idle_seconds', return_value=5):
                 self.assertFalse(listener._mail_turn())
+        logs = []
+        listener.log, listener.mail_waiting = logs.append, False
+        with patch.object(wechat_reply_flow, 'idle_seconds', return_value=5):
+            for _ in range(3):
+                listener.waiting = not listener.waiting       # 微信那边每轮改自己的标记
+                listener._mail_turn()
+        self.assertEqual(len(logs), 1)                        # 等人停手只说一次
 
 
 if __name__ == '__main__':
