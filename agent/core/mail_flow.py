@@ -211,7 +211,8 @@ class MailWatcher:
         self.log(f'邮件批次 #{turn["id"]} {outcome} · {why}')
 
     def _deliver(self, turn, mail, result):
-        subject, text = mail['subject'], result['text']
+        # 换行改成空格：编辑器把多行拆成几块，核对时拼起来没有换行，和原文永远对不上
+        subject, text = mail['subject'], ' '.join(result['text'].split())
         task = {'subject': subject, 'msg': text}
         self._front()
         top_before = top_subjects(self._folder('已发送'), 3)
@@ -227,16 +228,25 @@ class MailWatcher:
         reply_subject = '回复：' + subject
         ready, items = wait_page(self.hwnd, lambda it: [x for x in it if x['kind'] == 'EditControl'
                                                         and x['text'] == '主题' and x['value'] == reply_subject])
-        body = [it for it in items if it['text'] == '输入正文']
-        if not ready or not body:
+        if not ready:
             raise Abort('回信页没出来')
-        x1, y1, _, _ = body[0]['box']
-        self._tap([x1 + 60, y1 + 20])     # 点正文第一行：点正中会点进下面引用的原邮件（11/5）
-        try:
-            paste_text(text, mode='replace')
-        except InputRefused:
-            pass                           # 剪贴板读回会带上引用区，下面按控件树里正文那块再核一次
-        written, items = wait_page(self.hwnd, lambda it: body_text(it) == text, timeout=3)
+        # 回信页先出框、再整页重画一次，刚出来就粘贴会被清掉（11/19 真机连续两次"正文没写进去"，写信页同样）
+        time.sleep(2)
+        written = None
+        for _ in range(2):
+            items = read_page(self.hwnd)
+            body = [it for it in items if it['text'] == '输入正文']
+            if not body:
+                raise Abort('回信页没出来')
+            x1, y1, _, _ = body[0]['box']
+            self._tap([x1 + 60, y1 + 20])     # 点正文第一行：点正中会点进下面引用的原邮件（11/5）
+            try:
+                paste_text(text, mode='replace')
+            except InputRefused:
+                pass                           # 剪贴板读回会带上引用区，下面按控件树里正文那块再核一次
+            written, items = wait_page(self.hwnd, lambda it: body_text(it) == text, timeout=3)
+            if written:
+                break
         if not written:
             raise Abort('正文没写进去')
         from agent.core.mail_nodes import send_ready   # 晚导入：mail_nodes 导入时要读白名单里的邮箱

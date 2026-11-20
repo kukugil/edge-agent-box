@@ -128,7 +128,7 @@ class TestProcess(unittest.TestCase):
                       {'text': '输入正文', 'box': [280, 300, 900, 600], 'kind': 'GroupControl', 'value': ''},
                       t('发送', 360, 170, 30), t('回复', 300, 170, 30)]
         self.page = reply_page
-        self.result = {'status': 'send', 'text': '这个我晚点确认下回你', 'tier': 'free', 'reason': '明确事项交本人处理',
+        self.result = {'status': 'send', 'text': '这个我晚点确认下回你' + chr(10), 'tier': 'free', 'reason': '明确事项交本人处理',
                        'issues': ['确认评审会能否参加']}
 
     def tearDown(self):
