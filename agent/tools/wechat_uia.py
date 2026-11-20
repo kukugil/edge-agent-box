@@ -86,12 +86,12 @@ class WeChatUIA:
     def open(self, title: str) -> bool:
         """选中会话。已经选中就不动。输出：选中了没有。
 
-        先用控件树的 Select()（不动鼠标）；没生效再点会话行中心。会话行不在列表里时交回 False，
-        让调用方改用看图那条路找（看图的 find_row 会在列表里找字）。
+        先用控件树的 Select()（不动鼠标）；没生效再点会话行中心。会话行滚出了可见范围就滚动会话列表找回来，
+        还找不到交回 False，让调用方改用看图那条路找（看图的 find_row 会在列表里找字）。
         """
         if self.selected(title):
             return True
-        it = self._item(title)
+        it = self._item(title) or self._scroll_to(title)
         if it is None:
             return False
         try:
@@ -108,6 +108,44 @@ class WeChatUIA:
             time.sleep(0.5)
         self._box = None                 # 切了会话，输入框控件可能换了
         return self.selected(title)
+
+    def _session_list(self):
+        """会话列表的屏幕范围：取任意一个看得见的会话行的父控件。找不到交回 None。"""
+        try:
+            for item, _ in auto.WalkControl(self._root, includeTop=False, maxDepth=30):
+                if item.AutomationId.startswith(ITEM_PREFIX):
+                    rect = item.GetParentControl().BoundingRectangle
+                    return rect if rect.width() > 0 and rect.height() > 0 else None
+        except (OSError, RuntimeError, AttributeError):
+            return None
+        return None
+
+    def _scroll_to(self, title: str, pages: int = 15):
+        """会话列表只渲染看得见的十来行（11/19 真机：文件传输助手被挤下去后控件树里就没有这一行）。
+        先滚到最上面，再一屏一屏往下找。只滚滚轮、不点搜索框：搜索框会弹出网页搜索建议，规矩里不许点。"""
+        rect = self._session_list()
+        if rect is None:
+            return None
+        from agent.tools import scroll
+        x, y = (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
+        for _ in range(3):
+            scroll(x, y, -15)
+            time.sleep(0.2)
+        for _ in range(pages):
+            it = self._item_now(title)
+            if it is not None:
+                return it
+            scroll(x, y, 3)
+            time.sleep(0.3)
+        return self._item_now(title)
+
+    def _item_now(self, title: str):
+        """只查一次不等待，滚动查找时用。"""
+        try:
+            it = self._root.ListItemControl(AutomationId=ITEM_PREFIX + title, searchDepth=30)
+            return it if it.Exists(0, 0) and it.BoundingRectangle.width() > 0 else None
+        except Exception:
+            return None
 
     def input_text(self) -> str | None:
         """输出输入框里现在的字；读不到交回 None（不是空串，空串表示框是空的）。"""
