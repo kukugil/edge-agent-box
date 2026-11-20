@@ -207,14 +207,17 @@ def _combined(saved: list[dict], current: list[dict]) -> tuple[list[dict], list[
                 added = current[end:]
                 return saved + added, added
 
-    # 没有重叠时，只有明确的时间先后能证明这批是新的。也可能只是用户向上滚了。
-    first_at, last_at = current[0]['at'], saved[-1]['at']
-    if first_at is not None and last_at is not None and first_at > last_at:
-        return saved + current, current
     # 能认出这是往上滚后看到的旧屏时，不让它被当成新来消息。
     for start in range(len(saved) - len(current) + 1):
         if all(_same(old, new) for old, new in zip(saved[start:], current)):
             return [], []
+    # 没有重叠时，只有明确的时间先后能证明这批是新的。也可能只是用户向上滚了。
+    # 比的是两边"有时间的气泡"：时间分隔条滚出屏幕后气泡时间是 None，只看首尾两条会一直证明不了。
+    # 11/19 好友测试一次来了一屏多消息，从此历史再没追加，程序自己的回复全被当成本人插话、5 批转人工
+    saved_at = [msg['at'] for msg in saved if msg['at'] is not None]
+    current_at = [msg['at'] for msg in current if msg['at'] is not None]
+    if saved_at and current_at and min(current_at) > max(saved_at):
+        return saved + current, current
     return current, []
 
 

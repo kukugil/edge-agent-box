@@ -331,9 +331,11 @@ def remember(title: str, view: dict, sent_task: dict | None = None) -> list[dict
         matches = [i for i, msg in enumerate(view['msgs'])
                    if msg['who'] == 'us' and msg['kind'] == 'text'
                    and msg['text'] == sent_task['msg']]
-        if len(matches) == 1:
+        # 同一句发过不止一次（固定的交接话术）时标最下面那条：发送核对已确认列表末尾多了这一句。
+        # 11/19 只认唯一一条，第二次发的交接话术没标来源，被当成本人插话
+        if matches:
             messages_with_origin = list(view['msgs'])
-            index = matches[0]
+            index = matches[-1]
             messages_with_origin[index] = {**messages_with_origin[index],
                                            'origin': 'agent',
                                            'reply_kind': sent_task.get('tier', '')}

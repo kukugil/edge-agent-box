@@ -174,9 +174,10 @@ class Listener:
             trigger.remember(title, view)
             return
         history = trigger.remember(title, view)
-        previous = reply_turn.context_before(history, turn['incoming'])
+        previous, why = reply_turn.align(history, turn['incoming'])
         if previous is None:
-            self.store.finish(turn['id'], 'review', '待回复批次无法对齐，或本人已在本批来信后发言')
+            self.store.finish(turn['id'], 'review', why)
+            self.log(f'批次 #{turn["id"]} review · {why}')
             return
         result = reply_turn.decide(previous, turn['incoming'], self.store.open_issues(title, exclude_turn=turn['id']),
                                    datetime.now(), trigger.TONE, trigger.ask_qwen, trigger.rank_history)

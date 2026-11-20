@@ -24,17 +24,25 @@ meaning 只描述请求，不能补造事实或承诺。"""
 
 
 def context_before(history, incoming):
-    """逆序对齐已登记来信，从第一条未覆盖消息前取对话。"""
+    """逆序对齐已登记来信，从第一条未覆盖消息前取对话。对不上或本人已插话时交回 None。"""
+    return align(history, incoming)[0]
+
+
+def align(history, incoming):
+    """同 context_before，另交回对不上的原因，写进日志和转人工说明，方便区分是哪一种。
+
+    输出：(本批之前的对话 或 None, 原因；对上时原因为空)
+    """
     end = len(history)
     for row in reversed(incoming):
         index = next((i for i in range(end - 1, -1, -1) if _same(row, history[i])), None)
         if index is None:
-            return None
+            return None, '待回复来信在会话记录里找不到'
         end = index
     if any(row['who'] == 'us' and row.get('origin') != 'agent' for row in history[end:]):
         # 本人已插话时不能推断其覆盖了哪些待回复消息。
-        return None
-    return history[:end]
+        return None, '本批来信之后有不是程序发的我方消息（本人插话）'
+    return history[:end], ''
 
 
 def _recent(history, now):

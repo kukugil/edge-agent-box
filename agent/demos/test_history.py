@@ -40,6 +40,38 @@ class TestHistory(unittest.TestCase):
             self.assertEqual(history.sync(root, '测试联系人甲', [a, b]), [])
             self.assertEqual(history.sync(root, '测试联系人甲', [c]), [a, b, c])
 
+    def test_resyncs_after_a_screenful_of_new_messages(self):
+        """11/19 好友测试：一次来了一屏多，屏上已没有上次记下的最后一条，而那几条又没有时间（分隔条滚出去了）。
+        旧逻辑只比"屏上第一条"和"记录最后一条"的时间，从此一条都不追加。"""
+        from datetime import datetime
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            early = {**message('them', '早些的话'), 'at': datetime(2026, 11, 19, 19, 37)}
+            history.sync(root, '测试联系人甲', [early, message('us', '回过了'), message('them', '好的')])
+            later = [message('them', '分隔条上面的话'),
+                     {**message('them', '新的一屏'), 'at': datetime(2026, 11, 19, 20, 37)},
+                     {**message('us', '新回复'), 'at': datetime(2026, 11, 19, 20, 37)}]
+            self.assertEqual(len(history.sync(root, '测试联系人甲', later)), 6)
+            # 接上之后照常按重叠追加
+            follow = later[1:] + [message('them', '再来一句')]
+            self.assertEqual(len(history.sync(root, '测试联系人甲', follow)), 7)
+            # 没有时间能证明更新的屏不追加（可能是往上翻的旧屏）
+            self.assertEqual(history.sync(root, '测试联系人甲', [message('them', '不知道新旧')]),
+                             [message('them', '不知道新旧')])
+            self.assertEqual(len(next(root.glob('*.jsonl')).read_text(encoding='utf-8').splitlines()), 7)
+
+    def test_repeated_handoff_text_is_still_marked_as_agent(self):
+        """同一句交接话术发第二次，屏上有两条一样的：标最下面那条，不能当成本人插话。"""
+        with tempfile.TemporaryDirectory() as directory:
+            title = trigger.WHITELIST[0]
+            with patch.object(trigger, 'history_folder', lambda t, s: Path(directory)):
+                said = '这个我晚点回你'
+                first = [message('them', '问一'), message('us', said)]
+                trigger.remember(title, {'ok': True, 'source': 'uia', 'msgs': first}, sent_task={'msg': said})
+                second = first + [message('them', '问二'), message('us', said)]
+                rows = trigger.remember(title, {'ok': True, 'source': 'uia', 'msgs': second}, sent_task={'msg': said})
+            self.assertEqual([row.get('origin') for row in rows if row['who'] == 'us'], ['agent', 'agent'])
+
     def test_restart_restores_context_through_reply_entry(self):
         with tempfile.TemporaryDirectory() as directory:
             env = {**os.environ, 'LOCALAPPDATA': directory}
