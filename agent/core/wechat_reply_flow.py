@@ -7,10 +7,18 @@ from datetime import datetime
 from pathlib import Path
 
 from agent.core import graph, messages, reply_turn, send, trigger
-from agent.tools import capture_window, check_responsive, find_windows, norm, ocr
+from agent.tools import capture_window, check_responsive, find_windows, idle_seconds, norm, ocr
 from agent.tools.reply_store import ReplyStore
 from agent.tools.unread import bell_state, find_unread_rows
 from agent.tools.wechat_uia import WeChatUIA
+
+
+# 有待回复、微信却被人切走或最小化时，多久没人碰键鼠就由程序把微信切回前台（11/19 用户定）
+IDLE_WAKE = 60
+# 读不到会话时的重试间隔（秒），逐次拉长；读不到不再锁会话
+RETRY_BACKOFF = (5, 15, 30, 60)
+# 会话行预览多久查一次：每次要走一遍控件树
+PREVIEW_EVERY = 2.0
 
 
 def database_path(mode):
@@ -54,6 +62,11 @@ class Listener:
             send._uia_count(hwnd, title, text) if self._safe_target(title) else None)
         self.last_view = None
         self.waiting = False
+        self.started = datetime.now()
+        self.failures = {}     # 会话 → (连续读不到次数, 下次可重试的 monotonic 时刻)
+        self.previews = {}     # 会话 → 上次看到的会话行文字
+        self.next_preview = 0.0
+        self.next_wake = 0.0
 
     def _single_window(self):
         """双开或主窗口变化时，停止操作原来绑定的窗口。"""
@@ -94,7 +107,33 @@ class Listener:
         这里只对账本按我方气泡算进边界，聊天历史和回复内核看到的仍是原标记。"""
         if self._simulated(title):
             msgs = [{**msg, 'who': 'us'} if msg['who'] == 'none' else msg for msg in msgs]
-        self.store.observe(title, msgs)
+        if self.store.observe(title, msgs, since=self.started) == 'anchor':
+            self.log('屏幕和上次对不上，按我方最后一条重新划界')
+
+    def _failed(self, title, reason):
+        """读不到：记一次，按退避稍后再试，不锁会话。"""
+        count = self.failures.get(title, (0, 0))[0] + 1
+        delay = RETRY_BACKOFF[min(count, len(RETRY_BACKOFF)) - 1]
+        self.failures[title] = (count, time.monotonic() + delay)
+        self.store.read_failed(title, reason)
+        self.log(f'这次没读到会话（第 {count} 次）：{reason}，{delay} 秒后再试')
+
+    def _ready(self, titles):
+        now = time.monotonic()
+        return [title for title in titles if self.failures.get(title, (0, 0))[1] <= now]
+
+    def _poll_previews(self):
+        """会话行文字变了就登记待看。角标会被手机已读清掉；文件传输助手模拟时没有角标，也靠这个。"""
+        if time.monotonic() < self.next_preview:
+            return
+        self.next_preview = time.monotonic() + PREVIEW_EVERY
+        for title in self.titles:
+            text = self.adapter.preview(title)
+            if text is None:
+                continue
+            if title in self.previews and text != self.previews[title]:
+                self.store.discover(title, -1)
+            self.previews[title] = text
 
     def _collect(self, shot):
         """同一张图确认角标和当前打开会话，先登记再切窗。"""
@@ -117,15 +156,16 @@ class Listener:
 
     def process(self, title):
         """验证会话、刷新来信、生成草稿，必要时走现有发送护栏。"""
-        if (not self._single_window() or not self.adapter.unique(title)
-                or not check_responsive(self.hwnd)[0]
-                or not trigger.prepare(self.hwnd) or not self.adapter.open(title)):
-            self.store.read_failed(title, '无法唯一定位并打开测试会话')
+        if not self._single_window():
+            return   # 主循环下一轮处理：最小化就等，换了窗口就停
+        if not self.adapter.unique(title) or not trigger.prepare(self.hwnd) or not self.adapter.open(title):
+            self._failed(title, '无法唯一定位并打开测试会话')
             return
         view = messages.wait_quiet(lambda: self._read(title))
         if not view['ok'] or not view['quiet']:
-            self.store.read_failed(title, view['reason'] if not view['ok'] else '来信尚未稳定')
+            self._failed(title, view['reason'] if not view['ok'] else '来信尚未稳定')
             return
+        self.failures.pop(title, None)
         self._observe(title, view['msgs'])
         if not self.store.can_reply(title):
             return
@@ -183,39 +223,49 @@ class Listener:
                 or not any(self.adapter.unique(title) for title in self.titles)):
             raise RuntimeError('未找到可唯一定位的白名单测试会话')
         while time.monotonic() < deadline:
-            if not self._single_window():
-                if not self._minimized():
-                    raise RuntimeError('无法确认唯一且可响应的微信主窗口')
-                if not self.waiting:
-                    self.log('微信被最小化，等它恢复到前台再看')
-                self.waiting = True
-                time.sleep(trigger.POLL)
-                continue
-            ok, why = check_responsive(self.hwnd)
-            if not ok:
-                # 只是不在前台（人在用别的窗口）就等，不截图也不动微信；隐藏、卡死仍停（最小化在上面等）
-                if '前台' not in why:
+            minimized = not self._single_window()
+            if minimized and not self._minimized():
+                raise RuntimeError('无法确认唯一且可响应的微信主窗口')
+            front = False
+            if not minimized:
+                ok, why = check_responsive(self.hwnd)
+                # 只是不在前台（人在用别的窗口）照常看角标和预览，不动微信；隐藏、卡死仍停
+                if not ok and '前台' not in why:
                     raise RuntimeError('无法确认唯一且可响应的微信主窗口：' + why)
-                if not self.waiting:
-                    self.log('微信不在前台，等它回到前台再看')
-                self.waiting = True
-                time.sleep(trigger.POLL)
-                continue
-            if self.waiting:
+                front = ok
+            if front and self.waiting:
                 self.log('微信回到前台，继续监听')
                 self.waiting = False
-            shot = capture_window(self.hwnd)
-            if shot is None:
-                time.sleep(trigger.POLL)
-                continue
-            observed = bell_state(shot), trigger.chat_sig(shot), trigger.open_title(shot)
-            if observed != self.last_view:
-                self._collect(shot)
-                self.last_view = observed
-            scheduled = self.store.scheduled(self.titles)
+            # 被挡住时 PrintWindow 仍能截到；最小化时截不到，只靠会话行预览
+            shot = None if minimized else capture_window(self.hwnd)
+            if shot is not None:
+                observed = bell_state(shot), trigger.chat_sig(shot), trigger.open_title(shot)
+                if observed != self.last_view:
+                    self._collect(shot)
+                    self.last_view = observed
+            self._poll_previews()
+            scheduled = self._ready(self.store.scheduled(self.titles))
+            if scheduled and not front:
+                idle = idle_seconds()
+                if idle < IDLE_WAKE or time.monotonic() < self.next_wake:
+                    if not self.waiting:
+                        where = '被最小化' if minimized else '不在前台'
+                        self.log(f'有待回复，微信{where}：等键鼠停 {IDLE_WAKE} 秒后再接管')
+                    self.waiting = True
+                    time.sleep(trigger.POLL)
+                    continue
+                self.log(f'{int(idle)} 秒没人碰键鼠，把微信切回前台')
+                if not trigger.prepare(self.hwnd):
+                    self.next_wake = time.monotonic() + 10   # 切不过来（比如藏到了托盘）就别每半秒试一次
+                    time.sleep(trigger.POLL)
+                    continue
+                self.waiting = False
             if scheduled:
                 title = scheduled[0]
                 self.process(title)
+                text = self.adapter.preview(title)
+                if text is not None:
+                    self.previews[title] = text   # 自己刚发的回复改了预览，不能再当门铃
                 # 轮转避免同一联系人连发或失败时挤掉其他人的队列。
                 self.titles = [name for name in self.titles if name != title] + [title]
             else:

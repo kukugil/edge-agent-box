@@ -44,6 +44,15 @@ class WeChatUIA:
         it = self._root.ListItemControl(AutomationId=ITEM_PREFIX + title, searchDepth=30)
         return it if it.Exists(1) else None
 
+    def preview(self, title: str) -> str | None:
+        """会话行的整行文字（名字、最后一条预览、时间），当门铃用：手机上看过后角标会消失，预览不会。
+        只查一次不等待：找不到的会话每轮都等 1 秒，会拖慢整个监听。内容带人名和聊天原文，不能打印。"""
+        try:
+            item = self._root.ListItemControl(AutomationId=ITEM_PREFIX + title, searchDepth=30)
+            return item.Name if item.Exists(0, 0) else None
+        except Exception:
+            return None
+
     def unique(self, title: str) -> bool:
         """同一控件标识匹配多行时，不能用第一行当作收件人。"""
         try:

@@ -1,7 +1,7 @@
 """可恢复微信回复的独立需求样例。只用临时账本与替身，不碰微信。"""
 import json
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -78,15 +78,38 @@ class StoreTests(unittest.TestCase):
         self.store.observe(A, base + [incoming('在吗'), incoming('在吗')])
         self.assertEqual(len(self.store.pending(A)['incoming']), 2)
 
-    def test_shifted_repetitions_and_missing_unread_count_are_visible(self):
+    def test_unalignable_screen_falls_back_to_last_outgoing_without_locking(self):
+        """11/19 好友测试：对不上就锁会话，后面的正常来信全没回。改为以我方最后一条为界、不锁。"""
         self.store.observe(A, [outgoing('锚点'), incoming('在吗'), incoming('在吗')])
         self.store.discover(A, 1)
-        self.store.observe(A, [incoming('在吗'), incoming('在吗'), incoming('在吗')])
-        self.assertIsNone(self.store.pending(A))
-        self.assertIn('边界', self.store.review_items(A)[0]['reason'])
+        # 重复短句让对齐有两种解释：界后三条里前两条上次已经在屏上，只登记新多出的一条
+        self.assertEqual(self.store.observe(A, [incoming('在吗'), incoming('在吗'), incoming('在吗')]), 'anchor')
+        self.assertEqual([m['text'] for m in self.store.pending(A)['incoming']], ['在吗'])
+        self.assertEqual(self.store.review_items(A), [])
+        self.assertTrue(self.store.can_reply(A))
+
+    def test_first_contact_without_badge_keeps_only_messages_after_start(self):
+        """手机看过后电脑角标被清掉，只能靠预览门铃（数量未知）：启动前的旧话不回，启动后的回。"""
         self.store.discover(B, -1)
-        self.store.observe(B, [incoming('分不清旧已读和未读')])
-        self.assertTrue(self.store.review_items(B))
+        old = dict(incoming('昨天的旧话'), at=NOW - timedelta(hours=20))
+        self.store.observe(B, [old, outgoing('昨天回过了'), old, incoming('在吗')], since=NOW)
+        self.assertEqual([m['text'] for m in self.store.pending(B)['incoming']], ['在吗'])
+        self.store.discover(A, -1)
+        self.store.observe(A, [old], since=NOW)
+        self.assertIsNone(self.store.pending(A))
+        # 没有时间分隔条、也没有角标数：只认最后一条
+        self.store.discover('丙', -1)
+        self.store.observe('丙', [dict(incoming('早'), at=None), dict(incoming('在吗'), at=None)], since=NOW)
+        self.assertEqual([m['text'] for m in self.store.pending('丙')['incoming']], ['在吗'])
+
+    def test_read_failures_never_lock_the_session(self):
+        self.store.discover(A, 1)
+        for _ in range(5):
+            self.store.watch_failed(A, '读不到')
+        self.assertEqual(self.store.scheduled([A]), [A])
+        self.assertTrue(self.store.can_reply(A))
+        self.store.observe(A, [incoming('这条未读')])
+        self.assertEqual([m['text'] for m in self.store.pending(A)['incoming']], ['这条未读'])
 
     def test_longest_overlap_wins_over_repeated_fixed_receipt(self):
         """11/18 真机：滚屏一行后重叠 10 条，固定回执凑巧让首尾也对上 1 条。"""
@@ -189,44 +212,86 @@ class ReplyTests(unittest.TestCase):
 
 
 class ListenerTests(unittest.TestCase):
-    def test_minimized_wechat_waits_instead_of_stopping(self):
-        """11/19 真机：人切窗时误把微信最小化，监听跟着退出。最小化要等；换成别的窗口仍停。"""
+    def test_minimized_wechat_waits_for_idle_then_wakes(self):
+        """11/19 真机：人切窗误把微信最小化，监听跟着退出。改为：有待回复时等键鼠停够再由程序切回微信；换了窗口仍停。"""
         from agent.tools.window import WindowInfo
         main = WindowInfo(7, '微信', 'Qt', 1, True, False)
         mini = WindowInfo(7, '微信', 'Qt', 1, True, True)
         other = WindowInfo(8, '微信', 'Qt', 1, True, False)
-        now = [0]
 
-        def tick():
-            now[0] += 1
-            return now[0]
+        class Done(Exception):
+            pass
+        state = {'calls': 0, 'mini': False, 'idle': 0}
+
+        def prepare(hwnd):
+            state['calls'] += 1
+            state['mini'] = state['calls'] == 1    # 启动后人把微信最小化；第二次是程序唤醒、窗口还原
+            return True
+
+        def idle():
+            state['idle'] += 1
+            return 5 if state['idle'] <= 3 else 90
         with TemporaryDirectory() as tmp:
             store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            store.discover(A, 1)
+            store.observe(A, [incoming('在吗')])
             logs = []
-            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=Mock(unique=Mock(return_value=True))),
-                  patch.object(wechat_reply_flow.time, 'monotonic', side_effect=tick),
+            adapter = Mock(unique=Mock(return_value=True), preview=Mock(return_value=None))
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=adapter),
                   patch.object(wechat_reply_flow.time, 'sleep'),
-                  patch.object(trigger, 'prepare', return_value=True),
+                  patch.object(trigger, 'prepare', side_effect=prepare),
+                  patch.object(wechat_reply_flow, 'idle_seconds', side_effect=idle),
                   patch.object(wechat_reply_flow, 'check_responsive', return_value=(True, '')),
                   patch.object(wechat_reply_flow, 'capture_window', return_value=None),
-                  # 第 2、3 轮最小化（大窗口列表为空），之后恢复
                   patch.object(wechat_reply_flow.graph, '_wechat_windows',
-                               side_effect=lambda: [] if now[0] in (2, 3) else [main]),
-                  patch.object(wechat_reply_flow, 'find_windows', return_value=[mini])):
-                wechat_reply_flow.Listener(7, ['甲'], store, preview=False, log=logs.append).run(5)
-            self.assertEqual(logs, ['微信被最小化，等它恢复到前台再看', '微信回到前台，继续监听'])
-            now[0] = 0
-            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=Mock(unique=Mock(return_value=True))),
-                  patch.object(wechat_reply_flow.time, 'monotonic', side_effect=tick),
+                               side_effect=lambda: [] if state['mini'] else [main]),
+                  patch.object(wechat_reply_flow, 'find_windows', return_value=[mini]),
+                  patch.object(wechat_reply_flow.Listener, 'process', side_effect=Done) as process):
+                with self.assertRaises(Done):
+                    wechat_reply_flow.Listener(7, [A], store, preview=False, log=logs.append).run(60)
+            self.assertEqual(logs, ['有待回复，微信被最小化：等键鼠停 60 秒后再接管', '90 秒没人碰键鼠，把微信切回前台'])
+            self.assertEqual(state['calls'], 2)
+            process.assert_called_once_with(A)
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=adapter),
                   patch.object(wechat_reply_flow.time, 'sleep'),
                   patch.object(trigger, 'prepare', return_value=True),
                   patch.object(wechat_reply_flow, 'check_responsive', return_value=(True, '')),
                   # 主窗口换成了另一个：不是最小化，必须停
-                  patch.object(wechat_reply_flow.graph, '_wechat_windows',
-                               side_effect=lambda: [main] if now[0] <= 1 else [other]),
+                  patch.object(wechat_reply_flow.graph, '_wechat_windows', side_effect=[[main], [other], [other]]),
                   patch.object(wechat_reply_flow, 'find_windows', return_value=[mini, other])):
                 with self.assertRaises(RuntimeError):
-                    wechat_reply_flow.Listener(7, ['甲'], store, preview=False, log=logs.append).run(4)
+                    wechat_reply_flow.Listener(7, [A], store, preview=False, log=logs.append).run(60)
+
+    def test_preview_change_rings_doorbell_when_badge_was_cleared(self):
+        """手机上看过的消息，电脑角标会消失；会话行预览变了也要去看。"""
+        with TemporaryDirectory() as tmp:
+            store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            store.observe(A, [outgoing('上次')])
+            adapter = Mock(preview=Mock(side_effect=['甲 上次 17:00', '甲 在吗 17:05']))
+            with patch.object(wechat_reply_flow, 'WeChatUIA', return_value=adapter):
+                listener = wechat_reply_flow.Listener(7, [A], store, preview=False)
+                listener._poll_previews()
+                self.assertEqual(store.scheduled([A]), [])
+                listener.next_preview = 0
+                listener._poll_previews()
+            self.assertEqual(store.scheduled([A]), [A])
+
+    def test_open_failure_backs_off_instead_of_locking(self):
+        with TemporaryDirectory() as tmp:
+            store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            store.discover(A, 1)
+            adapter = Mock(unique=Mock(return_value=True), open=Mock(return_value=False))
+            logs = []
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=adapter),
+                  patch.object(wechat_reply_flow.Listener, '_single_window', return_value=True),
+                  patch.object(trigger, 'prepare', return_value=True)):
+                listener = wechat_reply_flow.Listener(7, [A], store, preview=False, log=logs.append)
+                for _ in range(3):
+                    listener.process(A)
+            self.assertTrue(store.can_reply(A))
+            self.assertEqual(store.scheduled([A]), [A])
+            self.assertEqual(listener._ready([A]), [])      # 退避期内先不重试
+            self.assertIn('第 3 次', logs[-1])
 
     def test_file_transfer_simulation_does_not_answer_own_reply(self):
         """模拟模式：角标不作数、旧气泡算边界；手机来的算来信，程序自己发的回复不再登记成来信。"""
@@ -330,6 +395,7 @@ class ListenerTests(unittest.TestCase):
                   patch.object(send.time, 'sleep'),
                   patch.object(send, 'press') as press):
                 listener = wechat_reply_flow.Listener(7, [A], store, preview=False)
+                listener.started = NOW
                 listener.process(A)
                 self.assertEqual(press.call_count, 1)
             self.assertEqual(store.scheduled([A]), [])

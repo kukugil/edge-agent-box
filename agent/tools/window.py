@@ -251,3 +251,20 @@ def capture_window(hwnd: int) -> Shot | None:
     # GetWindowRect 含看不见的拖拽边框，裁成和 window_rect 一样的范围
     l, t, r, b = window_rect(hwnd)
     return Shot(im.crop((l - wr.left, t - wr.top, r - wr.left, b - wr.top)), l, t)
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.UINT), ('dwTime', wintypes.DWORD)]
+
+
+def idle_seconds() -> float:
+    """距离最后一次键盘或鼠标输入过了多少秒（整台电脑，不分窗口）。
+
+    坑：程序自己用 SendInput 点击、打字也算输入，会把计时清零。调用方只在"微信被人切走以后"用它判断人走没走，
+    那段时间程序不会去碰键鼠，所以不用排除自己的输入。
+    """
+    info = _LASTINPUTINFO(cbSize=ctypes.sizeof(_LASTINPUTINFO))
+    if not user32.GetLastInputInfo(ctypes.byref(info)):
+        return 0.0
+    # 两个都是开机后的毫秒数，32 位会回绕（约 49.7 天），按无符号差算
+    return ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000

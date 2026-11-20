@@ -4,7 +4,7 @@ import json
 import sqlite3
 import time
 from contextlib import closing, contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from agent.tools.history import _same
@@ -53,6 +53,35 @@ def appended(previous, current):
     if len(matches) > 1 and matches[0] >= MIN_OVERLAP and matches[0] >= 2 * matches[1]:
         return current[matches[0]:]
     return None
+
+
+def _tail_after_us(rows):
+    """我方最后一条之后对方的气泡。我方包括程序发的和本人发的：本人回过，就以本人那句为界。"""
+    last = max((i for i, row in enumerate(rows) if row['who'] == 'us'), default=-1)
+    return [row for row in rows[last + 1:] if row['who'] == 'them']
+
+
+def after_anchor(previous, current, unread, since):
+    """对不上屏幕时的兜底：以我方最后一条为界取待回复（网页客服、RPA 自动回复的常见做法）。
+
+    输入：previous 上次屏幕（没有则 None）、current 这次屏幕、unread 角标数（None/-1 表示不知道）、
+         since 监听开始时刻（None 表示不按时间筛）
+    输出：要登记的对方气泡
+    坑：气泡时间来自时间分隔条，只精确到分钟，所以给 1 分钟余量；没有分隔条的气泡时间是 None。
+    """
+    fresh = _tail_after_us(current)
+    taken = _tail_after_us(previous) if previous else []
+    # 上次已经登记过、仍挂在界后开头的那几条不再登记
+    if taken and len(taken) <= len(fresh) and all(_same(a, b) for a, b in zip(taken, fresh)):
+        fresh = fresh[len(taken):]
+    if since is not None:
+        fresh = [row for row in fresh if row['at'] is None or row['at'] >= since - timedelta(minutes=1)]
+    if previous is None:
+        if unread and unread > 0:
+            fresh = fresh[-unread:]   # 第一次见：角标数是唯一确切的数量
+        elif any(row['at'] is None for row in fresh):
+            fresh = fresh[-1:]        # 不知道数量也不知道时间：只认最后一条，宁可少回旧话
+    return fresh
 
 
 class ReplyStore:
@@ -135,58 +164,49 @@ class ReplyStore:
         self.read_failed(title, reason)
 
     def read_failed(self, title, reason):
-        """两次读不到仍保留待读证据，避免占住其他会话。"""
-        key = contact_key(title)
+        """读不到只记次数、不锁会话：会话仍留在待读队列，由监听按退避重试。
+        11/19 好友测试：切窗、最小化时连读两次失败就锁死，要人手动解开，比漏回一条还难恢复。"""
         with self.transaction() as db:
-            row = db.execute('SELECT read_failures,blocked FROM session WHERE contact=?', (key,)).fetchone()
-            if row is None or row['blocked']:
-                return
-            db.execute('UPDATE session SET read_failures=read_failures+1 WHERE contact=?', (key,))
-            if row['read_failures'] >= 1:
-                self._review_boundary(db, key, [], reason)
+            db.execute('UPDATE session SET read_failures=read_failures+1 WHERE contact=? AND blocked=0',
+                       (contact_key(title),))
 
-    def _review_boundary(self, db, key, rows, reason):
-        self._insert(db, key, rows, 'review', reason)
-        db.execute("UPDATE turn SET state='review',reason=? WHERE contact=? AND state='queued'", (reason, key))
-        db.execute('UPDATE session SET blocked=1 WHERE contact=?', (key,))
+    def observe(self, title, rows, *, since=None):
+        """保存屏幕边界并登记新来信。首次已读画面只建立基线。
 
-    def observe(self, title, rows):
-        """保存屏幕边界并登记新来信。首次已读画面只建立基线。"""
+        先按上次屏幕对齐；对不上（或第一次见、或新增条数少于角标数）时，以我方最后一条为界：
+        界后对方说的都算待回复，去掉上次已登记过的那几条。不再因对不上而锁会话。
+        since：监听开始时刻，界后但时间更早的气泡（启动前就在的旧话）不算。
+        返回 'aligned'、'anchor'（按我方最后一条重新划界）或 None（只建基线 / 会话已锁）。"""
         key = contact_key(title)
         current = _snapshot(rows)
         with self.transaction() as db:
             session = db.execute('SELECT * FROM session WHERE contact=?', (key,)).fetchone()
             if session is None:
                 db.execute('INSERT INTO session(contact,snapshot) VALUES(?,?)', (key, _pack(current)))
-                return
+                return None
             if session['blocked']:
-                return
+                return None
             baseline, unread = session['snapshot'], session['unread']
-            if baseline is None:
-                added = current[-unread:] if unread and 0 < unread <= len(current) else None
-                if added is not None and any(row['who'] != 'them' for row in added):
-                    added = None
-            else:
-                added = appended(_unpack(baseline), current)
-            if added is None or (unread and unread > 0 and
-                                 sum(row['who'] == 'them' for row in added) < unread):
-                self._review_boundary(db, key, current, '来信边界无法核对')
-                return
-            if unread == -1 and not any(row['who'] == 'them' for row in added):
-                self._review_boundary(db, key, current, '未读来信未能定位')
-                return
+            previous_rows = _unpack(baseline) if baseline is not None else None
+            added = appended(previous_rows, current) if previous_rows is not None else None
+            aligned = None if added is None else [row for row in added if row['who'] == 'them']
+            how = 'aligned'
+            if aligned is None or (unread and unread > 0 and len(aligned) < unread):
+                fresh = after_anchor(previous_rows, current, unread, since)
+                if aligned is None or len(fresh) > len(aligned):
+                    aligned, how = fresh, 'anchor'
             db.execute('UPDATE session SET snapshot=?,unread=NULL,read_failures=0 WHERE contact=?',
                        (_pack(current), key))
-            incoming = [row for row in added if row['who'] == 'them']
-            if not incoming:
-                return
+            if not aligned:
+                return how
             previous = db.execute("SELECT * FROM turn WHERE contact=? AND state='queued' ORDER BY id DESC LIMIT 1",
                                   (key,)).fetchone()
             if previous is None:
-                self._insert(db, key, incoming)
+                self._insert(db, key, aligned)
             else:
                 db.execute('UPDATE turn SET incoming=?,draft=NULL,attempts=0 WHERE id=?',
-                           (_pack(_unpack(previous['incoming']) + incoming), previous['id']))
+                           (_pack(_unpack(previous['incoming']) + aligned), previous['id']))
+            return how
 
     def pending(self, title):
         """返回已经登记、尚未覆盖的最早批次。"""
