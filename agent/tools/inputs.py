@@ -61,12 +61,22 @@ class _RECT(ctypes.Structure):
     _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long), ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
 
 
+# 单独一份 user32、标好句柄类型：不标时句柄按 32 位 int 传，大于 2^31 的句柄会报 OverflowError，
+# 点击直接失败（11/19 新开的 Chrome 窗口就是这样）。单独一份是为了不改动别的模块共用的 user32
+_u32 = ctypes.WinDLL('user32')
+_u32.WindowFromPoint.argtypes = [ctypes.wintypes.POINT]
+_u32.WindowFromPoint.restype = ctypes.wintypes.HWND
+_u32.GetAncestor.argtypes = [ctypes.wintypes.HWND, ctypes.c_uint]
+_u32.GetAncestor.restype = ctypes.wintypes.HWND
+_u32.GetWindowRect.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(_RECT)]
+
+
 def _window_rect_at(x: int, y: int):
     """屏幕上 (x, y) 那一点所属的顶层窗口的 (左, 上, 右, 下)；拿不到交回 None。"""
-    hwnd = user32.WindowFromPoint(ctypes.wintypes.POINT(int(x), int(y)))
-    root = user32.GetAncestor(hwnd, 2) if hwnd else 0   # 2 = GA_ROOT：点在子控件上也要找到外面那层窗口
+    hwnd = _u32.WindowFromPoint(ctypes.wintypes.POINT(int(x), int(y)))
+    root = _u32.GetAncestor(hwnd, 2) if hwnd else None   # 2 = GA_ROOT：点在子控件上也要找到外面那层窗口
     r = _RECT()
-    if not root or not user32.GetWindowRect(root, ctypes.byref(r)):
+    if not root or not _u32.GetWindowRect(root, ctypes.byref(r)):
         return None
     return r.left, r.top, r.right, r.bottom
 

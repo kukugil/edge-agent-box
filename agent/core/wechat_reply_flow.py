@@ -1,6 +1,7 @@
 """微信白名单私聊的可恢复回复入口。预览与实际发送使用不同账本。"""
 import msvcrt
 import re
+import ctypes
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -20,9 +21,6 @@ IDLE_WAKE = 60
 RETRY_BACKOFF = (5, 15, 30, 60)
 # 会话行预览多久查一次：每次要走一遍控件树
 PREVIEW_EVERY = 2.0
-# 前台是程序自己刚用过的窗口（处理完邮件停在邮箱、处理完微信停在微信）时，键鼠停这么久就可以接着用；
-# 不能按 IDLE_WAKE 等：程序自己的点击也会刷新"最近一次键鼠"，邮件和微信轮流时会白等 60 秒
-AGENT_IDLE = 3
 
 
 def database_path(mode):
@@ -57,6 +55,7 @@ class Listener:
     def __init__(self, hwnd, titles, store, *, preview, log=print, mail=None):
         self.hwnd = hwnd
         self.mail = mail       # MailWatcher 或 None：邮件和微信在同一个循环里轮流用屏幕
+        self.handover = None   # 程序上次用完屏幕时的 (前台窗口, monotonic 时刻)，见 _ours
         self.titles = titles
         self.store = store
         self.preview = preview
@@ -163,7 +162,10 @@ class Listener:
         """验证会话、刷新来信、生成草稿，必要时走现有发送护栏。"""
         if not self._single_window():
             return   # 主循环下一轮处理：最小化就等，换了窗口就停
-        if not self.adapter.unique(title) or not trigger.prepare(self.hwnd) or not self.adapter.open(title):
+        # 先 prepare 再核对唯一：会话行滚出可见范围时要滚动列表找回，滚轮要微信在前台（11/19 文件传输助手被挤下去，连败 11 次）
+        if (not trigger.prepare(self.hwnd)
+                or not (self.adapter.unique(title) or (self.adapter.scroll_to(title) and self.adapter.unique(title)))
+                or not self.adapter.open(title)):
             self._failed(title, '无法唯一定位并打开测试会话')
             return
         view = messages.wait_quiet(lambda: self._read(title))
@@ -261,8 +263,7 @@ class Listener:
             scheduled = self._ready(self.store.scheduled(self.titles))
             if scheduled and not front:
                 idle = idle_seconds()
-                ours = self.mail is not None and _foreground_is(self.mail.hwnd)
-                if idle < (AGENT_IDLE if ours else IDLE_WAKE) or time.monotonic() < self.next_wake:
+                if (idle < IDLE_WAKE and not self._ours(idle)) or time.monotonic() < self.next_wake:
                     if not self.waiting:
                         where = '被最小化' if minimized else '不在前台'
                         self.log(f'有待回复，微信{where}：等键鼠停 {IDLE_WAKE} 秒后再接管')
@@ -278,6 +279,7 @@ class Listener:
             if scheduled:
                 title = scheduled[0]
                 self.process(title)
+                self._handed_over()
                 text = self.adapter.preview(title)
                 if text is not None:
                     self.previews[title] = text   # 自己刚发的回复改了预览，不能再当门铃
@@ -285,20 +287,31 @@ class Listener:
                 self.titles = [name for name in self.titles if name != title] + [title]
             elif self.mail is not None and self.mail.has_work() and self._mail_turn():
                 self.mail.process()
+                self._handed_over()
             else:
                 time.sleep(trigger.POLL)
 
+    def _handed_over(self):
+        """程序用完屏幕：记下此刻的前台窗口和时刻。"""
+        self.handover = (ctypes.windll.user32.GetForegroundWindow(), time.monotonic())
+
+    def _ours(self, idle):
+        """屏幕是不是还在程序手里：前台仍是程序上次用完的那个窗口，而且那之后没人碰过键鼠。
+        这时邮件和微信轮流可以直接接着用，不用等 60 秒（程序自己的点击也会刷新"最近一次键鼠"）。
+        11/19 真机：原来只看"前台是不是微信或邮箱"，人在邮箱里写信时停 3 秒就被抢走了。"""
+        if self.handover is None:
+            return False
+        window, done = self.handover
+        return ctypes.windll.user32.GetForegroundWindow() == window and idle >= time.monotonic() - done - 0.5
+
     def _mail_turn(self):
-        """轮到邮件时能不能用屏幕：前台是微信或邮箱（程序自己的）且键鼠停了 AGENT_IDLE 秒，
-        或者前台是别的窗口但键鼠停了 IDLE_WAKE 秒。人正在用电脑就等。"""
+        """轮到邮件时能不能用屏幕：屏幕还在程序手里，或者键鼠停了 IDLE_WAKE 秒。人正在用电脑就等。"""
         idle = idle_seconds()
-        ours = _foreground_is(self.hwnd) or _foreground_is(self.mail.hwnd)
-        if idle >= (AGENT_IDLE if ours else IDLE_WAKE):
-            if self.waiting:
-                self.waiting = False
+        if idle >= IDLE_WAKE or self._ours(idle):
+            self.waiting = False
             return True
         if not self.waiting:
-            self.log(f'有待回复的邮件：等键鼠停 {AGENT_IDLE if ours else IDLE_WAKE} 秒后再接管')
+            self.log(f'有待回复的邮件：等键鼠停 {IDLE_WAKE} 秒后再接管')
         self.waiting = True
         return False
 

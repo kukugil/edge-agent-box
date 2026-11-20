@@ -139,6 +139,10 @@ class WeChatUIA:
             time.sleep(0.3)
         return self._item_now(title)
 
+    def scroll_to(self, title: str) -> bool:
+        """会话行不在可见范围时滚动会话列表找回。找到交回 True。"""
+        return self._scroll_to(title) is not None
+
     def _item_now(self, title: str):
         """只查一次不等待，滚动查找时用。"""
         try:

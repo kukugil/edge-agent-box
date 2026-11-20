@@ -276,6 +276,20 @@ class ListenerTests(unittest.TestCase):
                 listener._poll_previews()
             self.assertEqual(store.scheduled([A]), [A])
 
+    def test_row_scrolled_out_is_found_before_uniqueness_check(self):
+        """11/19 真机：文件传输助手被挤出会话列表可见范围，核对唯一时一行都找不到，连败 11 次。"""
+        with TemporaryDirectory() as tmp:
+            store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            store.discover(A, 1)
+            adapter = Mock(unique=Mock(side_effect=[False, True]), scroll_to=Mock(return_value=True),
+                           open=Mock(return_value=False))
+            with (patch.object(wechat_reply_flow, 'WeChatUIA', return_value=adapter),
+                  patch.object(wechat_reply_flow.Listener, '_single_window', return_value=True),
+                  patch.object(trigger, 'prepare', return_value=True)):
+                wechat_reply_flow.Listener(7, [A], store, preview=False, log=lambda line: None).process(A)
+            adapter.scroll_to.assert_called_once_with(A)
+            adapter.open.assert_called_once_with(A)
+
     def test_open_failure_backs_off_instead_of_locking(self):
         with TemporaryDirectory() as tmp:
             store = ReplyStore(Path(tmp) / 'reply.db', mode='send')

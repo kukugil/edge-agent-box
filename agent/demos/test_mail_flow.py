@@ -136,18 +136,29 @@ class TestProcess(unittest.TestCase):
 
 
 class TestMailTurn(unittest.TestCase):
-    def test_waits_for_person_unless_screen_is_ours(self):
+    def listener(self):
         listener = wechat_reply_flow.Listener.__new__(wechat_reply_flow.Listener)
         listener.hwnd, listener.mail, listener.waiting, listener.log = 7, Mock(hwnd=9), False, lambda line: None
-        with patch.object(wechat_reply_flow, 'idle_seconds', return_value=5), \
-             patch.object(wechat_reply_flow, '_foreground_is', side_effect=lambda h: h == 7):
-            self.assertTrue(listener._mail_turn())           # 前台是程序刚用过的微信：停 3 秒就接
-        with patch.object(wechat_reply_flow, 'idle_seconds', return_value=5), \
-             patch.object(wechat_reply_flow, '_foreground_is', return_value=False):
-            self.assertFalse(listener._mail_turn())          # 人在用别的窗口：等满 60 秒
-        with patch.object(wechat_reply_flow, 'idle_seconds', return_value=61), \
-             patch.object(wechat_reply_flow, '_foreground_is', return_value=False):
-            self.assertTrue(listener._mail_turn())
+        return listener
+
+    def test_screen_still_ours_only_if_nobody_touched_it_since(self):
+        """11/19 真机：人在邮箱窗口里写信，停 3 秒就被程序抢去回微信。只有程序用完后没人碰过键鼠才算"还在程序手里"。"""
+        listener = self.listener()
+        fg = Mock(return_value=7)
+        with patch.object(wechat_reply_flow.ctypes.windll.user32, 'GetForegroundWindow', fg),              patch.object(wechat_reply_flow.time, 'monotonic', return_value=100.0):
+            listener.handover = (7, 95.0)                       # 5 秒前程序用完，停在 7 号窗口
+            with patch.object(wechat_reply_flow, 'idle_seconds', return_value=5.2):
+                self.assertTrue(listener._mail_turn())          # 之后没人动过：直接接着用
+            with patch.object(wechat_reply_flow, 'idle_seconds', return_value=2):
+                self.assertFalse(listener._mail_turn())         # 程序用完后有人动过键鼠：等满 60 秒
+            fg.return_value = 9
+            with patch.object(wechat_reply_flow, 'idle_seconds', return_value=5.2):
+                self.assertFalse(listener._mail_turn())         # 前台换了窗口（人点过）：也等
+            with patch.object(wechat_reply_flow, 'idle_seconds', return_value=61):
+                self.assertTrue(listener._mail_turn())
+            listener.handover = None
+            with patch.object(wechat_reply_flow, 'idle_seconds', return_value=5):
+                self.assertFalse(listener._mail_turn())
 
 
 if __name__ == '__main__':
