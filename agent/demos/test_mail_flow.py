@@ -103,6 +103,11 @@ class TestRefresh(unittest.TestCase):
             watcher._folder.assert_called_once_with('收件箱')
             self.assertEqual(store.pending(MAIL)['incoming'][0]['subject'], NEW[2])
             self.assertFalse(watcher.refresh)
+            with patch.object(mail_flow.time, 'monotonic', return_value=watcher.next_refresh + 10):
+                store.finish(store.pending(MAIL)['id'], 'resolved', '测试')
+                self.assertFalse(watcher.has_work())        # 刚刷过、没新提示：不动屏幕
+            with patch.object(mail_flow.time, 'monotonic', return_value=watcher.next_refresh + mail_flow.REFRESH_IDLE):
+                self.assertTrue(watcher.has_work())         # 提示自己消失了也定时刷新
 
 
 class TestProcess(unittest.TestCase):

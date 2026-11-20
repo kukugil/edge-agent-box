@@ -27,6 +27,7 @@ from agent.tools.window import _foreground_is, _text, activate, user32, wintypes
 MAIL = 'QQ邮箱'            # 账本和托盘里这一路的名字
 POLL_EVERY = 3.0          # 读一次收件箱约 0.6 秒，太勤会拖慢微信那边的循环
 REFRESH_EVERY = 30.0      # 标题提示有新邮件时，最多这么久点一次「收件箱」刷新列表
+REFRESH_IDLE = 120.0      # 标题门铃会自己消失（11/19 真机：几分钟后提示没了、列表仍是旧的），再按这个间隔定时刷新
 # 列表里今天的邮件显示"刚刚""N分钟前""N小时前"或时分，更早的显示日期（11/19 真机：刚到的显示"6分钟前"）
 TODAY = re.compile(r'^(刚刚|\d{1,2}分钟前|\d{1,2}小时前|\d{1,2}:\d{2})$')
 SEND = '发送'
@@ -90,7 +91,7 @@ class MailWatcher:
         self.hidden = False
         self.refresh = False      # 标题提示有新邮件，列表要点「收件箱」才会刷新
         self.title = None
-        self.next_refresh = 0.0
+        self.next_refresh = time.monotonic()   # 刚接入时读到的就是新的，2 分钟后再定时刷新
 
     # ---------- 发现 ----------
     def poll(self):
@@ -131,9 +132,13 @@ class MailWatcher:
             self.log(f'收到 {count} 封新邮件')
         return count
 
+    def _refresh_due(self):
+        now = time.monotonic()
+        return (self.refresh and now >= self.next_refresh) or now >= self.next_refresh + REFRESH_IDLE
+
     def has_work(self):
-        """有要用屏幕的事：待回复的邮件，或者标题提示有新邮件、该刷新列表了。"""
-        if self.refresh and time.monotonic() >= self.next_refresh:
+        """有要用屏幕的事：待回复的邮件，或者该刷新列表了（标题门铃响了，或者离上次刷新已经 2 分钟）。"""
+        if self.seen is not None and self._refresh_due():
             return True
         return self.store.can_reply(MAIL) and self.store.pending(MAIL) is not None
 
@@ -163,7 +168,7 @@ class MailWatcher:
 
     def process(self):
         """先刷新列表（标题提示有新邮件时），再处理最早登记的一封。任何一步没把握都不点发送。"""
-        if self.refresh and time.monotonic() >= self.next_refresh:
+        if self.seen is not None and self._refresh_due():
             self.refresh = False
             self.next_refresh = time.monotonic() + REFRESH_EVERY
             try:
