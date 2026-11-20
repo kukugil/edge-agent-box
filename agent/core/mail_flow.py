@@ -24,7 +24,8 @@ from agent.tools.window import _foreground_is, activate, user32, wintypes
 
 MAIL = 'QQ邮箱'            # 账本和托盘里这一路的名字
 POLL_EVERY = 3.0          # 读一次收件箱约 0.6 秒，太勤会拖慢微信那边的循环
-TODAY = re.compile(r'^\d{1,2}:\d{2}$')     # 列表里今天的邮件只显示时分，更早的显示日期
+# 列表里今天的邮件显示"刚刚""N分钟前""N小时前"或时分，更早的显示日期（11/19 真机：刚到的显示"6分钟前"）
+TODAY = re.compile(r'^(刚刚|\d{1,2}分钟前|\d{1,2}小时前|\d{1,2}:\d{2})$')
 SEND = '发送'
 REPLY = '回复'
 
@@ -54,7 +55,8 @@ def inbox_rows(items):
 
 
 def row_key(row):
-    return row['sender'], row['time'], row['subject'], row['preview']
+    """认同一封信。不带时间：相对时间每分钟都在变（"6分钟前"→"7分钟前"），带上会把同一封当新信反复登记。"""
+    return row['sender'], row['subject'], row['preview']
 
 
 def on_inbox(items):

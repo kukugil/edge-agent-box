@@ -43,6 +43,8 @@ class TestInbox(unittest.TestCase):
         self.assertTrue(wanted(row, [ME]))
         self.assertFalse(wanted({**row, 'sender': 'stranger'}, [ME]))
         self.assertFalse(wanted({**row, 'time': '11/10'}, [ME]))
+        for when in ('刚刚', '6分钟前', '2小时前', '9:05'):
+            self.assertTrue(wanted({**row, 'time': when}, [ME]), when)
         self.assertFalse(wanted({**row, 'subject': '回复：请确认评审会'}, [ME]))   # 自己回出去又落进收件箱的
 
 
@@ -66,6 +68,8 @@ class TestPoll(unittest.TestCase):
         self.assertEqual(self.poll(inbox(OLD)), 0)                   # 启动时已有的只作基线
         self.assertEqual(self.poll(inbox(NEW, OLD)), 1)
         self.assertEqual(self.poll(inbox(NEW, OLD)), 0)              # 同一封不重复登记
+        moved = ('tester', '7分钟前', NEW[2], NEW[3])
+        self.assertEqual(self.poll(inbox(moved, OLD)), 0)            # 相对时间变了也还是同一封
         self.assertEqual(self.poll(inbox(ECHO, NEW, OLD)), 0)        # 自己的回复不回
         turn = self.store.pending(MAIL)
         self.assertEqual(turn['incoming'][0]['subject'], '请确认评审会')
