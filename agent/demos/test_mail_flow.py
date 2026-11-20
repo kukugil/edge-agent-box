@@ -83,6 +83,28 @@ class TestPoll(unittest.TestCase):
         self.assertEqual(self.poll(inbox(NEW, OLD)), 1)
 
 
+class TestRefresh(unittest.TestCase):
+    def test_title_doorbell_refreshes_inbox_then_finds_new_mail(self):
+        """列表不会自己刷新，标题变成"收到 N 封新邮件"时点一下「收件箱」再读。"""
+        with TemporaryDirectory() as tmp:
+            store = ReplyStore(Path(tmp) / 'reply.db', mode='send')
+            watcher = MailWatcher(9, store, [ME], log=lambda line: None)
+            pages = [inbox(OLD), inbox(OLD), inbox(NEW, OLD)]
+            title = Mock(side_effect=['QQ邮箱 - Google Chrome', '收到 1 封新邮件 - Google Chrome', '收到 1 封新邮件 - Google Chrome'])
+            watcher._front = lambda: None
+            watcher._folder = Mock(return_value=inbox(NEW, OLD))
+            with patch.object(mail_flow, 'read_page', side_effect=pages),                  patch.object(mail_flow, '_text', side_effect=lambda fn, h: title()),                  patch.object(mail_flow.user32, 'IsIconic', return_value=False):
+                watcher.poll()                              # 基线
+                self.assertFalse(watcher.has_work())
+                watcher.next_poll = 0
+                self.assertEqual(watcher.poll(), 0)         # 标题响了，列表还是旧的
+                self.assertTrue(watcher.has_work())
+                watcher.process()                           # 点「收件箱」刷新，再读一次
+            watcher._folder.assert_called_once_with('收件箱')
+            self.assertEqual(store.pending(MAIL)['incoming'][0]['subject'], NEW[2])
+            self.assertFalse(watcher.refresh)
+
+
 class TestProcess(unittest.TestCase):
     """把网页换成假的，只看程序在什么条件下点发送、账本怎么记。"""
 

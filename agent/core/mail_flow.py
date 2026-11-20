@@ -9,6 +9,8 @@
 坑：
   - 测试邮箱自己发给自己，回出去的"回复：…"也会落进收件箱，所以"回复："开头的不当新邮件，否则自己回自己。
   - Chrome 最小化时读不到网页内容，这时看不到新邮件；被挡住没关系（启动参数关了后台降频）。
+  - 收件箱列表不会自己刷新（11/19 真机：等了两分半，列表里一直没有新信），只有窗口标题会变成
+    "收到 N 封新邮件"。所以拿标题当门铃，响了就点一下「收件箱」刷新列表，这一步和处理邮件一样要等人停手。
   - 只用列表里的预览当正文：演示邮件都很短。长邮件只看得到开头，打开后读全文还没做。
 """
 import re
@@ -20,10 +22,11 @@ from agent.core.mail_check import LIST_TOP, NAV_RIGHT, judge_replied, top_subjec
 from agent.tools import center, click, paste_text, window_rect
 from agent.tools.inputs import InputRefused
 from agent.tools.web import body_text, open_folder, read_page, wait_page
-from agent.tools.window import _foreground_is, activate, user32, wintypes
+from agent.tools.window import _foreground_is, _text, activate, user32, wintypes
 
 MAIL = 'QQ邮箱'            # 账本和托盘里这一路的名字
 POLL_EVERY = 3.0          # 读一次收件箱约 0.6 秒，太勤会拖慢微信那边的循环
+REFRESH_EVERY = 30.0      # 标题提示有新邮件时，最多这么久点一次「收件箱」刷新列表
 # 列表里今天的邮件显示"刚刚""N分钟前""N小时前"或时分，更早的显示日期（11/19 真机：刚到的显示"6分钟前"）
 TODAY = re.compile(r'^(刚刚|\d{1,2}分钟前|\d{1,2}小时前|\d{1,2}:\d{2})$')
 SEND = '发送'
@@ -85,6 +88,9 @@ class MailWatcher:
         self.seen = None          # 启动时屏上已有的邮件只当基线，不回
         self.next_poll = 0.0
         self.hidden = False
+        self.refresh = False      # 标题提示有新邮件，列表要点「收件箱」才会刷新
+        self.title = None
+        self.next_refresh = 0.0
 
     # ---------- 发现 ----------
     def poll(self):
@@ -98,6 +104,10 @@ class MailWatcher:
             self.hidden = True
             return 0
         self.hidden = False
+        title = _text(user32.GetWindowTextW, self.hwnd)
+        if '封新邮件' in title and title != self.title:
+            self.refresh = True   # 标题变了才算门铃响：刷新后标题可能一直挂着"收到 N 封"，不能每 30 秒刷一次
+        self.title = title
         items = read_page(self.hwnd)
         if not on_inbox(items):
             return 0              # 停在别的页（人在看信、或上一轮没回到收件箱）：先不登记，免得把旧信当新信
@@ -122,6 +132,9 @@ class MailWatcher:
         return count
 
     def has_work(self):
+        """有要用屏幕的事：待回复的邮件，或者标题提示有新邮件、该刷新列表了。"""
+        if self.refresh and time.monotonic() >= self.next_refresh:
+            return True
         return self.store.can_reply(MAIL) and self.store.pending(MAIL) is not None
 
     # ---------- 做 ----------
@@ -149,7 +162,19 @@ class MailWatcher:
         return min(hits, key=lambda it: it['box'][1]) if hits else None
 
     def process(self):
-        """处理最早登记的一封。任何一步没把握都不点发送。"""
+        """先刷新列表（标题提示有新邮件时），再处理最早登记的一封。任何一步没把握都不点发送。"""
+        if self.refresh and time.monotonic() >= self.next_refresh:
+            self.refresh = False
+            self.next_refresh = time.monotonic() + REFRESH_EVERY
+            try:
+                self._front()
+                self._folder('收件箱')
+            except Abort as exc:
+                self.log(f'刷新收件箱没成功：{exc}')
+                return
+            self.next_poll = 0
+            self.poll()
+            return
         turn = self.store.pending(MAIL)
         if turn is None or not self.store.can_reply(MAIL):
             return
