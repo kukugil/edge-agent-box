@@ -57,6 +57,7 @@ class Runner(QObject):
         self.recent = deque(maxlen=6)
         self.stopping = False
         self.after_stop = []
+        self.last_extra = []
         self.buffer = b''
         self.kill_timer = QTimer(self)
         self.kill_timer.setSingleShot(True)
@@ -70,6 +71,7 @@ class Runner(QObject):
         if self.running():
             return
         self.stop_file.unlink(missing_ok=True)
+        self.last_extra = list(extra)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         # 日志不放项目里：和别的微信相关输出一样，只留在本机数据目录
         self.log_path = self.log_dir / f'listen-{datetime.now():%m%d-%H%M%S}.log'
@@ -88,22 +90,21 @@ class Runner(QObject):
         process.errorOccurred.connect(self._error)
         self.process = process
         self.status = '正在启动'
-        process.start(self.program, [*self.args, '--stop-file', str(self.stop_file), *extra])
+        process.start(self.program, [*self.args, '--stop-file', str(self.stop_file), *self.last_extra])
         self.changed.emit()
 
     def stop(self, then=None) -> None:
         """请监听停下。then：停下后要做的事（比如退出托盘）。"""
+        if self.running() and not self.stopping:
+            self.stop_file.write_text('stop', encoding='utf-8')
+            self.stopping = True
+            self.status = '正在停止：等这一轮做完'
+            self.kill_timer.start(STOP_GRACE_MS)
+            self.changed.emit()
         if then is not None:
             self.after_stop.append(then)
         if not self.running():
             self._drain()
-            return
-        if not self.stopping:
-            self.stopping = True
-            self.stop_file.write_text('stop', encoding='utf-8')
-            self.status = '正在停止：等这一轮做完'
-            self.kill_timer.start(STOP_GRACE_MS)
-            self.changed.emit()
 
     def _kill(self):
         if self.running():
@@ -133,8 +134,7 @@ class Runner(QObject):
     def _error(self, error):
         if error == QProcess.ProcessError.FailedToStart:
             self.status = '已停止：监听程序没能启动'
-            self.changed.emit()
-            self._drain()
+            self._finished()
 
     def _finished(self, *_):
         self._read()

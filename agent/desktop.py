@@ -25,6 +25,9 @@ from agent.desktop_runner import ModelDialog, Runner, open_mail_window
 from agent.core.wechat_reply_flow import database_path
 from agent.tools.reply_store import ReplyStore
 from agent.tools import history
+from agent.s3.panel import Panel
+from agent.s3.runner import S3Runner
+from agent.s3.session import Session
 
 
 STYLE = """
@@ -129,6 +132,10 @@ class Inbox(QMainWindow):
         self.recent = text_label('', 'recent')
         self.recent.setWordWrap(True)
         nav.addWidget(self.recent)
+        self.s3_button = QPushButton('电脑助手')
+        self.s3_button.setObjectName('plain')
+        self.s3_button.clicked.connect(self.open_s3)
+        nav.addWidget(self.s3_button)
         settings = QPushButton('模型设置')
         settings.setObjectName('plain')
         settings.clicked.connect(self.open_settings)
@@ -178,9 +185,16 @@ class Inbox(QMainWindow):
         self.menu = QMenu(self)
         self.menu.addAction('打开端侧盒子', self.open_window)
         self.listen_action = self.menu.addAction('开始自动回复', self.toggle_listen)
+        self.s3_action = self.menu.addAction('电脑助手', self.open_s3)
+        self.s3_stop = self.menu.addAction('停止电脑助手', self.stop_s3)
         self.menu.addAction('退出端侧盒子', self.quit)
         self.runner = Runner(self)
         self.runner.changed.connect(self.show_runner)
+        self.s3_runner = S3Runner(self)
+        self.s3_panel = Panel(self.start_s3, self.stop_s3)
+        self.s3_panel.setStyleSheet(STYLE)
+        self.s3_runner.event.connect(self.s3_panel.apply_event)
+        self.s3 = Session(self.runner, self.s3_runner, self.show_s3_state, self.s3_panel.show_result)
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self.on_tray)
         self.tray.show()
@@ -188,9 +202,11 @@ class Inbox(QMainWindow):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(900)
         self.refresh()
-        self.show_runner()
+        self.show_s3_state()
 
     def toggle_listen(self):
+        if self.s3.busy:
+            return
         if self.runner.running():
             self.runner.stop()
         else:
@@ -201,17 +217,63 @@ class Inbox(QMainWindow):
         self.run_state.setText(self.runner.status)
         label = '停止自动回复' if running else '开始自动回复'
         self.toggle.setText(label)
-        self.toggle.setEnabled(not self.runner.stopping)
-        self.mail.setEnabled(not running and bool(trigger.load_allowed_mail()))
+        can_toggle = not (self.runner.stopping or self.s3.busy)
+        self.toggle.setEnabled(can_toggle)
+        self.mail.setEnabled(not running and not self.s3.busy and bool(trigger.load_allowed_mail()))
         self.listen_action.setText(label)
-        self.listen_action.setEnabled(not self.runner.stopping)
+        self.listen_action.setEnabled(can_toggle)
         self.recent.setText(chr(10).join(self.runner.recent))
-        self.tray.setToolTip(f'端侧盒子 · {self.runner.status} · {self.tray_count or 0} 项待处理')
+        self.update_tray_tooltip()
+
+    def start_s3(self, task):
+        """隐藏会遮挡操作目标的窗口，再提交任务。"""
+        if not self.s3.busy:
+            self.hide()
+            self.s3_panel.hide()
+            self.s3.start(task)
+
+    def stop_s3(self):
+        """停止当前电脑助手任务或取消待启动的任务。"""
+        self.s3.stop()
+
+    def open_s3(self):
+        """只在空闲时打开电脑助手窗口。"""
+        if not self.s3.busy:
+            self.s3_panel.open()
+
+    def show_s3_state(self):
+        """互斥期间锁住监听入口和窗口入口。"""
+        busy = self.s3.busy
+        for widget in (self.s3_button, self.s3_action, self.s3_panel.task, self.s3_panel.start_button):
+            widget.setEnabled(not busy)
+        can_stop = self.s3.state in ('waiting', 'running')
+        self.s3_stop.setEnabled(can_stop)
+        self.s3_panel.stop_button.setEnabled(can_stop)
+        self.show_runner()
+
+    def update_tray_tooltip(self):
+        """刷新当前任务状态和总用时，空闲时展示监听状态。"""
+        if self.s3.busy:
+            status = {
+                'waiting': '正在停下微信自动回复…',
+                'cancelled': '已取消启动，等待监听退出…',
+                'running': self.s3_panel.progress or '正在启动…',
+                'stopping': '正在停止…',
+            }[self.s3.state]
+            elapsed = f'{self.s3.elapsed():.1f} 秒'
+            self.s3_panel.status.setText(f'{status} · 总用时 {elapsed}')
+            self.tray.setToolTip(f'电脑助手运行中 · {status} · {elapsed}')
+        else:
+            self.tray.setToolTip(f'端侧盒子 · {self.runner.status} · {self.tray_count or 0} 项待处理')
 
     def open_settings(self):
         ModelDialog(self).exec()
 
     def quit(self):
+        """先结束电脑助手，再走监听退出流程。"""
+        self.s3.quit(self.quit_listen)
+
+    def quit_listen(self):
         """先让监听停下（正在发的那条发完），再退出托盘，不留下没人管的监听进程。"""
         if self.runner.running():
             self.open_window()
@@ -224,6 +286,8 @@ class Inbox(QMainWindow):
             self.open_window()
 
     def open_window(self):
+        if self.s3.busy:
+            return
         self.refresh()
         self.showNormal()
         self.raise_()
@@ -286,7 +350,7 @@ class Inbox(QMainWindow):
         if count != self.tray_count:
             self.tray_count = count
             self.tray.setIcon(box_icon(count))
-            self.tray.setToolTip(f'端侧盒子 · {self.runner.status} · {count} 项待处理')
+        self.update_tray_tooltip()
         self.render()
 
     def reply_items(self, store, name):
