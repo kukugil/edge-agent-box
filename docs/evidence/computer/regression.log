@@ -1,0 +1,625 @@
+--- 首次批量发现旧测试 (exit 1) ---
+
+ERROR: test_act_route (unittest.loader._FailedTest.test_act_route)
+ImportError: Failed to import test module: test_act_route
+  File "D:\Newitem\edge-agent-s3\agent\demos\test_act_route.py", line 141, in <module>
+    sys.exit(1 if bad else 0)
+SystemExit: 0
+
+ERROR: test_send_button (unittest.loader._FailedTest.test_send_button)
+ImportError: Failed to import test module: test_send_button
+  File "D:\Newitem\edge-agent-s3\agent\demos\test_send_button.py", line 178, in <module>
+    sys.exit(1 if bad else 0)
+SystemExit: 0
+
+ERROR: test_credential_round_trip (test_tray_entry.TestModelSettings.test_credential_round_trip)
+OSError: [WinError 1312] 指定的登录会话不存在。可能已被终止。
+
+FAIL: test_delay_three_seconds (test_anchor_check.AnchorTests.test_delay_three_seconds)
+AssertionError: 不该去核对
+
+FAIL: test_journal_before_enter (test_anchor_check.AnchorTests.test_journal_before_enter)
+AssertionError: Items in the second set but not the first:
+1
+
+FAIL: test_journal_restart_clear (test_anchor_check.AnchorTests.test_journal_restart_clear)
+AssertionError: Items in the second set but not the first:
+1
+
+FAIL: test_journal_terminal_states (test_anchor_check.AnchorTests.test_journal_terminal_states)
+AssertionError: Items in the second set but not the first:
+1
+
+FAIL: test_open_chat_dynamic_input (test_anchor_check.AnchorTests.test_open_chat_dynamic_input)
+AssertionError: Expected 'click' to be called once. Called 0 times.
+
+FAIL: test_readback_fail (test_anchor_check.AnchorTests.test_readback_fail)
+AssertionError: 不该去核对
+
+FAIL: test_generation_and_delivery_share_real_persistent_batch (test_reliable_reply.ListenerTests.test_generation_and_delivery_share_real_persistent_batch)
+AssertionError: Lists differ: ['测试会话甲'] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+'测试会话甲'
+
+- ['测试会话甲']
++ []
+
+Ran 134 tests in 3.541s
+
+FAILED (failures=7, errors=3)
+
+--- 首次新增用例 (exit 1) ---
+
+ERROR: test_mail_review_and_wechat_readonly_draft_from_one_store (test_computer_window.WindowTests.test_mail_review_and_wechat_readonly_draft_from_one_store)
+KeyError: 'at'
+
+FAIL: test_handoff_simulation_screenshot_and_stamp (test_computer_window.WindowTests.test_handoff_simulation_screenshot_and_stamp)
+AssertionError: '（模拟）' not found in '没有待处理的会话'
+
+Ran 36 tests in 0.449s
+
+FAILED (failures=1, errors=1)
+
+--- test_act_route (exit 0) ---
+  [对] 整张图建得起来
+做
+  切前台失败：窗口没响应
+  [对] 切前台失败时 click 不动键鼠，记 "切前台失败：窗口没响应"
+做
+  切前台失败：窗口没响应
+  [对] 切前台失败时 type 不动键鼠，记 "切前台失败：窗口没响应"
+做
+  切前台失败：窗口没响应
+  [对] 切前台失败时 key 不动键鼠，记 "切前台失败：窗口没响应"
+做
+  已按回车
+  [对] 正常按回车：记 "已按回车"，按了一次
+做
+  已点发送
+  [对] 点发送：记 "已点发送"，点在 (110, 220)
+做
+  已输入
+  [对] 微信输入用 empty_only（有草稿就拒绝）
+做
+  已输入
+  [对] 邮件正文用 replace（整框换掉，粘完读回）
+做
+  模型说完成了
+  [对] done 不动键鼠：记 "模型说完成了"
+做
+  规矩拦了
+  [对] 规矩拦下不动键鼠：记 "规矩拦了"
+做
+  发送许可作废：当前会话标题已经不是目标
+  [对] 会话标题变了（列表重排、点到别的会话） → 不按回车，记 "发送许可作废：当前会话标题已经不是目标"
+做
+  发送许可作废：读不到输入框（焦点可能被抢走）
+  [对] 焦点被抢走，读不到输入框 → 不按回车，记 "发送许可作废：读不到输入框（焦点可能被抢走）"
+做
+  发送许可作废：输入框里不正好是这句
+  [对] 框里只差标点 → 不按回车，记 "发送许可作废：输入框里不正好是这句"
+做
+  发送许可作废：输入框里不正好是这句
+  [对] 框里多了别的字 → 不按回车，记 "发送许可作废：输入框里不正好是这句"
+做
+  发送许可作废：输入框里不正好是这句
+  [对] 焦点在搜索框，读到的是搜索词 → 不按回车，记 "发送许可作废：输入框里不正好是这句"
+  [对] 发送许可作废 → 停
+做
+  不认识的动作 'noop'，没动键鼠
+  [对] 「做」碰到不认识的动作 → 不按回车，记 "不认识的动作 'noop'，没动键鼠"
+规矩
+  拦下：不认识的动作 'noop'，只能是 click / type / key / done / fail
+  [对] 规矩拦下不认识的动作
+做
+  只许按 enter，没动键鼠
+  [对] 「做」碰到 enter 以外的键 → 不按
+规矩
+  拦下：点的位置在「发送」按钮上；字输入好后用 key enter 发送，不要点按钮
+  [对] 点在落在按钮正中 → 拦（点的位置在「发送」按钮上；字输入好后用 key enter 发送，不要点按钮）
+规矩
+  拦下：点的位置在「发送」按钮上；字输入好后用 key enter 发送，不要点按钮
+  [对] 点在偏出按钮 10px → 拦（点的位置在「发送」按钮上；字输入好后用 key enter 发送，不要点按钮）
+规矩
+  [对] 点在离按钮远（输入框中间） → 放行（放行）
+做
+  被底层拒绝：输入框里已经有 2 个字符
+  [对] 底层拒绝不崩：记 "被底层拒绝：输入框里已经有 2 个字符"
+  [对] 按过回车、核对失败一次 → 停
+  [对] 点过发送、后面又点了别处 → 停
+  [对] 上一步被底层拒绝 → 停
+  [对] 上一步切前台失败 → 停
+  [对] 被拒绝在前、之后正常 → 继续
+  [对] 刚输入完还没回车 → 继续
+  [对] 规矩拦下 → 继续（让模型换做法）
+  [对] 一步都没有 → 继续
+规矩
+  拦下：字已经输好了，下一步用 key enter 发送，不要再点任何地方
+  [对] 输完字后 click（点在发送按钮位置、识字没认出按钮）→ 拦
+规矩
+  拦下：字已经输好了，下一步用 key enter 发送，不要再点任何地方
+  [对] 输完字后 click（点在别处）→ 拦
+规矩
+  拦下：字已经输好了，下一步用 key enter 发送，不要再点任何地方
+  [对] 输完字、被拦一次后再 click → 还是拦
+规矩
+  [对] 输完字后 key enter，OCR 一个字都没认出 → 放行（交给发送许可读回）
+规矩
+  拦下：按 enter 之前必须先 type 输入“测试回复 1”；输入框里原有的字不能发
+  [对] 没输字就 key enter → 拦
+规矩
+  [对] 还没输字时 click 输入框 → 放行
+  核对：画面没变
+  [对] 回车被拦下 → 不去核对聊天区
+  核对：输入框里有要发的字（粘贴后读回）
+  [对] 打字记了"已输入" → 这步算过，不靠 OCR
+  耗时：准备+开会话+读消息写回复 0.0 秒，主循环 0.0 秒
+  [对] run_one 停在"被底层拒绝：草稿…" → human
+  耗时：准备+开会话+读消息写回复 0.0 秒，主循环 0.0 秒
+  [对] run_one 停在"发送许可作废：读…" → human
+  耗时：准备+开会话+读消息写回复 0.0 秒，主循环 0.0 秒
+  [对] run_one 停在"切前台失败：没响…" → retry
+  耗时：准备+开会话+读消息写回复 0.0 秒，主循环 0.0 秒
+  [对] run_one 停在"已按回车…" → unsure
+全部通过
+
+--- test_anchor_check (exit 0) ---
+35/35 通过
+test_anchor_shift (__main__.AnchorTests.test_anchor_shift)
+输入偏离兜底位置的线，证明实际搜线而非只返回固定差值。 ... ok
+test_animation_above (__main__.AnchorTests.test_animation_above)
+输入回复上方两帧变化的动图墨迹，两帧都输出 NONE。 ... ok
+test_badge_digit_and_dot (__main__.AnchorTests.test_badge_digit_and_dot)
+输入白字红底角标和无白字小红点，两者均保留。 ... ok
+test_below_center (__main__.AnchorTests.test_below_center)
+输入回复下方居中系统提示墨迹，输出 NONE。 ... ok
+test_below_left (__main__.AnchorTests.test_below_left)
+输入回复下方左侧墨迹，输出 NEW。 ... ok
+test_below_right (__main__.AnchorTests.test_below_right)
+输入回复下方右侧墨迹，输出 NONE。 ... ok
+test_delay_three_seconds (__main__.AnchorTests.test_delay_three_seconds)
+输入前三秒无气泡、第三秒出现的假 OCR，输出最终成功。 ... ok
+test_fallback (__main__.AnchorTests.test_fallback)
+输入无线合成图，输出高度兜底。 ... ok
+test_height_700 (__main__.AnchorTests.test_height_700)
+输入 700 高合成图，断言实测底边 545。 ... ok
+test_height_800 (__main__.AnchorTests.test_height_800)
+输入 800 高合成图，断言实测底边 645。 ... ok
+test_height_900 (__main__.AnchorTests.test_height_900)
+输入 900 高合成图，断言实测底边 745。 ... ok
+test_incoming_same (__main__.AnchorTests.test_incoming_same)
+输入对方同句，输出不成功。 ... ok
+test_isolated_badge (__main__.AnchorTests.test_isolated_badge)
+输入隔离序号、带角标列表和 pending，输出不再挑该会话。 ... ok
+test_journal_before_enter (__main__.AnchorTests.test_journal_before_enter)
+输入许可通过的假 act，断言回车发生前记录已落盘。 ... ok
+test_journal_failure_blocks_enter (__main__.AnchorTests.test_journal_failure_blocks_enter)
+输入落盘异常，输出异常向上传递且从未按回车。 ... ok
+test_journal_restart_clear (__main__.AnchorTests.test_journal_restart_clear)
+输入发送前账本，断言重启隔离；清账选项解除隔离且不访问应用。 ... ok
+test_journal_terminal_states (__main__.AnchorTests.test_journal_terminal_states)
+输入未知、失败和成功记录，断言按任务保留未决项。 ... ok
+test_layout_counts_tall_window (__main__.AnchorTests.test_layout_counts_tall_window)
+输入 900 高窗口和底部气泡，断言 look 使用当前图布局。 ... ok
+test_low_score (__main__.AnchorTests.test_low_score)
+输入标题低置信字块，拒绝匹配。 ... ok
+test_mail_dedup (__main__.AnchorTests.test_mail_dedup)
+输入同一 y±3 重复控件，输出仅一封。 ... ok
+test_mail_fail (__main__.AnchorTests.test_mail_fail)
+输入无新增且仍在原回信页，输出 FAIL。 ... ok
+test_mail_node_outcome (__main__.AnchorTests.test_mail_node_outcome)
+输入假邮件列表新增两行，断言节点写入不确定结果并结束。 ... ok
+test_mail_one (__main__.AnchorTests.test_mail_one)
+输入已发送新增一行，输出 OK。 ... ok
+test_mail_two (__main__.AnchorTests.test_mail_two)
+输入已发送新增两行，输出 UNKNOWN。 ... ok
+test_missing_capture_unknown (__main__.AnchorTests.test_missing_capture_unknown)
+输入始终失败的截图，输出 UNKNOWN，允许重启账本保留隔离。 ... ok
+test_old_message (__main__.AnchorTests.test_old_message)
+输入旧同句且计数不增，输出不成功。 ... ok
+test_open_chat_dynamic_input (__main__.AnchorTests.test_open_chat_dynamic_input)
+输入 900 高假窗口，输出分隔线下 50 的假点击，未动真实鼠标。 ... ok
+test_readback_fail (__main__.AnchorTests.test_readback_fail)
+输入五次无新增、读回原句，输出确定失败且只读回一次。 ... ok
+test_red_failure (__main__.AnchorTests.test_red_failure)
+输入最下我方气泡左侧红色标记，输出不确定。 ... ok
+test_red_without_white (__main__.AnchorTests.test_red_without_white)
+输入角标位置纯红大块，输出无角标。 ... ok
+test_run_one_fail_retry (__main__.AnchorTests.test_run_one_fail_retry)
+输入按回车后确定失败的图结果，输出 RETRY 并落盘 fail。 ... ok
+test_serve_unsure_isolates (__main__.AnchorTests.test_serve_unsure_isolates)
+输入 UNSURE 后持续带角标的假服务，断言仅执行一次任务。 ... ok
+test_truncated_row (__main__.AnchorTests.test_truncated_row)
+输入带省略号的列表标题，输出找不到行。 ... ok
+test_truncated_title (__main__.AnchorTests.test_truncated_title)
+输入两种省略号标题，均拒绝匹配。 ... ok
+test_wrong_title_even_with_draft (__main__.AnchorTests.test_wrong_title_even_with_draft)
+输入错误标题且仍有草稿，输出不确定，禁止按失败重试。 ... ok
+
+----------------------------------------------------------------------
+Ran 35 tests in 10.973s
+
+OK
+
+--- test_d16_handoff (exit 0) ---
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  白名单#1 已转人工，通知启动=True
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  白名单#1 已转人工，通知启动=<MagicMock name='notify()' id='1869716149056'>
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.019s
+
+OK
+
+--- test_d16_reply_flow (exit 0) ---
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+  等静：读 None 次，失败 None 次，静下来了=None，最后一次：ok
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 0.045s
+
+OK
+
+--- test_d16_reply_sources (exit 0) ---
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.004s
+
+OK
+
+--- test_history (exit 0) ---
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 1.243s
+
+OK
+
+--- test_input_guards (exit 0) ---
+第 31 条：危险按键
+  [通过] press('esc') 被拒绝，一个键都没发
+  [通过] press('ESC') 被拒绝，一个键都没发
+  [通过] press('shift+esc') 被拒绝，一个键都没发
+  [通过] press('alt+f4') 被拒绝，一个键都没发
+  [通过] press('enter') 照常能按
+第 18 条：输入框里已有草稿
+  [通过] 有草稿：拒绝粘贴
+  [通过] 有草稿：草稿原样保留
+  [通过] 有草稿：没发 ctrl+v
+  [通过] 有草稿：最后取消了选中
+  [通过] 有草稿：报错里不带草稿内容
+  [通过] 空输入框：照常粘进去
+  [通过] 框里正好是这句：不粘第二遍
+  [通过] 只有空白的草稿 ' '：也拒绝，框不变
+  [通过] 只有空白的草稿 '\t'：也拒绝，框不变
+  [通过] 只有空白的草稿 '\r\n'：也拒绝，框不变
+  [通过] 只有空白的草稿 '\u3000'：也拒绝，框不变
+  [通过] 框里只多一个空格：不算同一句，拒绝
+  [通过] 有草稿但复制失败：粘完读回不对，拒绝
+  [通过] 有草稿但复制失败：没按回车
+  [通过] 复制一直不成（读不到输入框）：不确定，拒绝
+  [通过] mode='replace'：覆盖
+  [通过] mode='replace' 读不回：拒绝
+  [通过] mode='append'：追加
+第 32、33 条：点关闭、最小化
+  [通过] click 关闭（右上角）：拒绝，鼠标没动
+  [通过] click 最小化（关闭左边 90px）：拒绝，鼠标没动
+  [通过] click 最大化窗口的关闭（y 在窗口上沿外 8px 内）：拒绝，鼠标没动
+  [通过] click 标题栏左边，离按钮远：照常点
+  [通过] click 右上角往下 50px（聊天区顶上）：照常点
+  [通过] 不认识的 mode 报错
+
+29/29 通过
+
+--- test_mail_flow (exit 0) ---
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 0.124s
+
+OK
+
+--- test_reliable_reply (exit 0) ---
+模拟已开：屏上 1 条旧消息只作边界
+屏幕和上次对不上，按我方最后一条重新划界
+  [fake] 会话已确认（0.0s）
+  [fake] 已粘贴并读回一致（0.0s）
+  [fake] 已按回车（0.0s）
+  [fake] 核对到这条已发出（0.0s）
+批次 #1 ok · 消息列表多了这一句
+模拟已开：屏上 1 条旧消息只作边界
+.........................
+----------------------------------------------------------------------
+Ran 25 tests in 0.463s
+
+OK
+
+--- test_reply_tiers (exit 0) ---
+  [对] 正常：照常回
+  [对] 不确定：回固定的不给事实的话
+  [对] 不确定：不连着发同一句
+  [对] 高风险：固定话术、要通知、不停住
+  [对] 高风险：三次都想答应 → 固定话术
+  [对] 图片：回一句等下看
+  [对] 语音：回一句等下听
+  [对] 只有表情包：怎么啦
+  [对] 最后一条是我方：不回
+  [对] 检查：句子里夹着待确认不能发
+离线 10/10 对
+
+--- test_s3_protocol (exit 0) ---
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 0.001s
+
+OK
+
+--- test_s3_session (exit 0) ---
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.329s
+
+OK
+
+--- test_s3_worker (exit 0) ---
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.142s
+
+OK
+
+--- test_send_button (exit 0) ---
+一、绕过：target 不写"发送"，实际点到发送按钮
+定位
+  按文字找到「发送」（包含，3 处）
+规矩
+阻塞原因：收件人不是测试号
+  [对] 顶部写着“送”的按钮：收件人不对 → 拦（点在 [306, 171]）
+定位
+  按文字找到「发送」（包含，3 处）
+规矩
+阻塞原因：正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type
+  [对] 顶部写着“送”的按钮：正文没那句 → 拦
+定位
+  按文字找到「发送」（包含，2 处）
+规矩
+阻塞原因：收件人不是测试号
+  [对] 顶部写着“发”的按钮：收件人不对 → 拦（点在 [306, 171]）
+定位
+  按文字找到「发送」（包含，2 处）
+规矩
+阻塞原因：正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type
+  [对] 顶部写着“发”的按钮：正文没那句 → 拦
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+阻塞原因：收件人不是测试号
+  [对] 顶部的“发 送”：收件人不对 → 拦（点在 [306, 171]）
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+阻塞原因：正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type
+  [对] 顶部的“发 送”：正文没那句 → 拦
+二、收件人和正文都对，target 写法不同，都当作"点发送"
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+  [对] 顶部写着“发送”的按钮：放行，点在发送按钮
+做
+  已点发送
+  [对]   「做」记成 "已点发送"
+  [对]   路口停下，不再来一圈
+核对:仍在回信页且正文完整保留
+  [对]   核对去「已发送」里数，不只看画面变没变
+定位
+  按文字找到「发送」（包含，3 处）
+规矩
+  [对] 顶部写着“送”的按钮：放行，点在发送按钮
+做
+  已点发送
+  [对]   「做」记成 "已点发送"
+  [对]   路口停下，不再来一圈
+核对:仍在回信页且正文完整保留
+  [对]   核对去「已发送」里数，不只看画面变没变
+三、包含匹配点到别的带"发送"的元素
+定位
+  按文字找到「分别发送」（包含，1 处）
+规矩
+阻塞原因：实际点到的是「分别发送」，不是发送按钮；要发送就点顶部写着“发送”的按钮
+  [对] 点到「分别发送」→ 拦（实际点到的是「分别发送」，不是发送按钮；要发送就点顶部写着“发送”的按钮）
+四、target 说点发送，实际点到的不是发送按钮
+定位
+  按文字找到「发送通知」（包含，1 处）
+规矩
+阻塞原因：实际点到的是「发送通知」，不是发送按钮；要发送就点顶部写着“发送”的按钮
+  [对] 包含匹配点到「发送通知」→ 拦（实际点到的是「发送通知」，不是发送按钮；要发送就点顶部写着“发送”的按钮）
+五、普通点击不受影响
+定位
+  按文字找到「回复」（相等，1 处）
+规矩
+  [对] 点「回复」放行
+做
+  已点击
+  [对]   「做」记成 "已点击"，路口继续
+六、第 8 条：只认标题完全一致的原邮件，发前再核对主题
+定位
+  按文字找到「测试邮件 3」（相等，1 处）
+规矩
+  [对] 有完全一致的那封 → 放行，点在它上面（[527, 299]）
+定位
+  按文字找到「回复：测试邮件 3」（包含，1 处）
+规矩
+阻塞原因：实际点到的是「回复：测试邮件 3」，不是标题正好为“测试邮件 3”的邮件
+  [对] 只有「回复：测试邮件 3」→ 拦（实际点到的是「回复：测试邮件 3」，不是标题正好为“测试邮件 3”的邮件）
+定位
+  按文字找到「测试邮件 10」（包含，1 处）
+规矩
+阻塞原因：实际点到的是「测试邮件 10」，不是标题正好为“测试邮件 1”的邮件
+  [对] 找"测试邮件 1"、只有"测试邮件 10" → 拦（实际点到的是「测试邮件 10」，不是标题正好为“测试邮件 1”的邮件）
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+阻塞原因：主题栏不是“回复：测试邮件 3”，可能回错了邮件
+  [对] 主题栏是"回复：测试邮件 30" → 不许发（主题栏不是“回复：测试邮件 3”，可能回错了邮件）
+七、第 19、21 条：逐字比
+规矩
+阻塞原因：正文只能写：测试回复 3
+  [对] 打的字少个空格 → 拦
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+阻塞原因：正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type
+  [对] 正文是"额外文字 + 这句" → 不许发
+八、Codex 11/10 大洞 1：不认识的动作
+规矩
+阻塞原因：不认识的动作 'noop'，只能是 click / type / done / fail
+  [对] 动作 noop → 拦
+九、Codex 11/10 大洞 3：规矩查完、点下去之前页面变了
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+做
+  发送许可作废：收件人不是测试号
+  [对] 收件人被改成别人 → 不点，记 "发送许可作废：收件人不是测试号"
+  [对]   路口停下
+  核对：画面变了
+  [对]   没点就不去「已发送」里数
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+做
+  发送许可作废：正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type
+  [对] 正文被清空 → 不点，记 "发送许可作废：正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type"
+  [对]   路口停下
+  核对：画面变了
+  [对]   没点就不去「已发送」里数
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+做
+  发送许可作废：找不到主题栏，读不清收件人
+  [对] 页面整个换了（读不到东西） → 不点，记 "发送许可作废：找不到主题栏，读不清收件人"
+  [对]   路口停下
+  核对：画面变了
+  [对]   没点就不去「已发送」里数
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+做
+  发送许可作废：「发送」按钮不在原来的位置
+  [对] 发送按钮挪了位置 → 不点，记 "发送许可作废：「发送」按钮不在原来的位置"
+  [对]   路口停下
+  核对：画面变了
+  [对]   没点就不去「已发送」里数
+十一、11/11 真机：正文框同一起点多一块 "n" 残影
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+  [对] 同起点的 "n" 残影不算 → 放行（放行）
+定位
+  按文字找到「发送」（相等，1 处）
+规矩
+阻塞原因：正文里必须正好是要发的那句话，不能多也不能少；先点正文再 type
+  [对] 别的位置多出的字照样拦
+十二、11/11 真机：「已发送」按最上面几行判，不数可见区
+  [对] top_subjects 不算左侧栏标签
+  [对] 正好新插进 1 封（旧行被挤出可见区也没关系） → ok
+  [对] 插进两封同标题 → 不确定 → unknown
+  [对] 最上面不是这封 → 不确定 → unknown
+  [对] 同一行读了两次也只算一行 → ok
+十、打开文件夹前 Chrome 切不到前台 → 一下都不点
+  打不开「已发送」：Chrome 切不到前台（被别的窗口挡着）
+  [对] 切不到前台：交回空、没点
+  [对] 邮件整张图建得起来
+全部通过
+
+--- test_send_flow (exit 0) ---
+  [对] 一切正常：ok，按回车 1 次，框里剩 ''（消息列表多了这一句）
+  [对] 会话对不上：不粘不按：retry，按回车 0 次，框里剩 ''（会话没对上或读不清）
+  [对] 发前数不清：不粘不按：retry，按回车 0 次，框里剩 ''（发前数不清这句已有几条）
+  [对] 焦点不在输入框：不粘不按：retry，按回车 0 次，框里剩 ''（焦点不在聊天输入框（前台可能是别的窗口））
+  [对] 框里有别人的草稿：不动、交给人：human，按回车 0 次，框里剩 '我打了一半'（输入框里已有 5 个字（可能是你的草稿），没动）
+  [对] 粘贴后控件值晚到：等到一致再发：ok，按回车 1 次，框里剩 ''（消息列表多了这一句）
+  [对] 粘贴后一直读不到：不按回车：retry，按回车 0 次，框里剩 '测试'（粘贴后读回不是这句，已清空）
+  [对] 粘贴读回不对：清掉、重试：retry，按回车 0 次，框里剩 ''（粘贴后读回不是这句，已清空）
+  [对] 粘贴读回不对又清不掉：交给人：human，按回车 0 次，框里剩 '错测试'（粘贴后读回不对，也没清干净，请看一眼输入框）
+  [对] 回车前会话变了：不按、清掉：retry，按回车 0 次，框里剩 ''（回车前会话、焦点或输入框变了，已清空）
+  [对] 回车没起作用：字还在，清掉、重试：retry，按回车 1 次，框里剩 ''（回车没发出去，字还在框里，已清空）
+  [对] 发了但核对不上：可能已发、交给人：unsure，按回车 1 次，框里剩 ''（按了回车但没核对到新消息，可能已发）
+
+12/12 对
+晚到消息 / 自动旧稿：retry
+晚到消息 / 本人改稿：human
+晚到消息 / 读屏失败：human
+晚到消息 / 重要事项：human
+
+--- test_tray_entry (exit 0) ---
+........
+----------------------------------------------------------------------
+Ran 8 tests in 0.214s
+
+OK
+
+--- 新增用例与入口检查 (exit 0) ---
+usage: worker.py [-h] --task TASK --run-dir RUN_DIR
+
+options:
+  -h, --help         show this help message and exit
+  --task TASK
+  --run-dir RUN_DIR
+usage: desktop.py [-h] [--tray] [--file-transfer-only] [--reply-db REPLY_DB]
+                  [--listen]
+desktop.py: error: --listen 写的是默认账本，不能和 --reply-db 一起用，否则托盘看的和监听写的不是同一本
+test_after_five_second_timeout_uses_taskkill_then_qt_kill (test_computer_session.RunnerTests.test_after_five_second_timeout_uses_taskkill_then_qt_kill) ... ok
+test_command_uses_configured_python_and_run_directory (test_computer_session.RunnerTests.test_command_uses_configured_python_and_run_directory) ... ok
+test_crash_and_failed_to_start (test_computer_session.RunnerTests.test_crash_and_failed_to_start) ... ok
+test_done_waits_for_exit_and_only_reports_once (test_computer_session.RunnerTests.test_done_waits_for_exit_and_only_reports_once) ... ok
+test_early_stop_exits_without_taskkill (test_computer_session.RunnerTests.test_early_stop_exits_without_taskkill) ... ok
+test_real_qt_pipe_with_synthetic_child (test_computer_session.RunnerTests.test_real_qt_pipe_with_synthetic_child) ... ok
+test_cancel_waiting_requires_manual_restore_with_snapshot (test_computer_session.SessionTests.test_cancel_waiting_requires_manual_restore_with_snapshot) ... ok
+test_quit_running_waits_for_worker_and_never_restores (test_computer_session.SessionTests.test_quit_running_waits_for_worker_and_never_restores) ... ok
+test_quit_waiting_cancels_start (test_computer_session.SessionTests.test_quit_waiting_cancels_start) ... ok
+test_worker_timing_and_no_automatic_restore (test_computer_session.SessionTests.test_worker_timing_and_no_automatic_restore) ... ok
+test_ignores_invalid_json_and_results (test_computer_uitars.EventTests.test_ignores_invalid_json_and_results) ... ok
+test_split_utf8_and_step_limits (test_computer_uitars.EventTests.test_split_utf8_and_step_limits) ... ok
+test_alternate_headers_and_multiple_actions (test_computer_uitars.KernelTests.test_alternate_headers_and_multiple_actions) ... ok
+test_empty_malformed_and_unknown (test_computer_uitars.KernelTests.test_empty_malformed_and_unknown) ... ok
+test_hotkeys (test_computer_uitars.KernelTests.test_hotkeys) ... ok
+test_prompt_verbatim_and_history (test_computer_uitars.KernelTests.test_prompt_verbatim_and_history) ... ok
+test_resize_coordinate_pad_and_box_center (test_computer_uitars.KernelTests.test_resize_coordinate_pad_and_box_center) ... ok
+test_seventh_round_keeps_only_images_3_to_7_and_all_six_texts (test_computer_uitars.KernelTests.test_seventh_round_keeps_only_images_3_to_7_and_all_six_texts) ... ok
+test_summary_and_request (test_computer_uitars.KernelTests.test_summary_and_request) ... ok
+test_type_quotes_commas_newline_and_action_inside_text (test_computer_uitars.KernelTests.test_type_quotes_commas_newline_and_action_inside_text) ... ok
+test_handoff_simulation_screenshot_and_stamp (test_computer_window.WindowTests.test_handoff_simulation_screenshot_and_stamp) ... ok
+test_image_marker_uses_drawn_rect_and_original_screen (test_computer_window.WindowTests.test_image_marker_uses_drawn_rect_and_original_screen) ... ok
+test_mail_option_listener_and_original_buttons (test_computer_window.WindowTests.test_mail_option_listener_and_original_buttons) ... ok
+test_mail_review_and_wechat_readonly_draft_from_one_store (test_computer_window.WindowTests.test_mail_review_and_wechat_readonly_draft_from_one_store) ... ok
+test_navigation_tray_and_window_close (test_computer_window.WindowTests.test_navigation_tray_and_window_close) ... ok
+test_quit_orders_worker_before_listener (test_computer_window.WindowTests.test_quit_orders_worker_before_listener) ... ok
+test_result_reopens_last_step_then_user_resumes_once (test_computer_window.WindowTests.test_result_reopens_last_step_then_user_resumes_once) ... ok
+test_click_drag_scroll_hotkey_and_wait (test_computer_worker.ActionTests.test_click_drag_scroll_hotkey_and_wait) ... ok
+test_type_recovers_clipboard_and_keys_on_stop_or_input_failure (test_computer_worker.ActionTests.test_type_recovers_clipboard_and_keys_on_stop_or_input_failure) ... ok
+test_type_restore_before_enter (test_computer_worker.ActionTests.test_type_restore_before_enter) ... ok
+test_all_25_rounds_including_empty_and_unknown_actions (test_computer_worker.WorkerTests.test_all_25_rounds_including_empty_and_unknown_actions) ... ok
+test_call_user_parse_failure_and_stop_after_action (test_computer_worker.WorkerTests.test_call_user_parse_failure_and_stop_after_action) ... ok
+test_execution_exception_includes_action (test_computer_worker.WorkerTests.test_execution_exception_includes_action) ... ok
+test_image_limit_and_padding_leave_original_intact (test_computer_worker.WorkerTests.test_image_limit_and_padding_leave_original_intact) ... ok
+test_only_connection_errors_retry (test_computer_worker.WorkerTests.test_only_connection_errors_retry) ... ok
+test_retry_success_and_thinking_toggle (test_computer_worker.WorkerTests.test_retry_success_and_thinking_toggle) ... ok
+test_sequential_actions_and_terminal_short_circuit (test_computer_worker.WorkerTests.test_sequential_actions_and_terminal_short_circuit) ... ok
+
+----------------------------------------------------------------------
+Ran 37 tests in 0.299s
+
+OK

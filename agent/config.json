@@ -20,5 +20,18 @@
     "ground_api_key": "EMPTY",
     "grounding_width": 1932,
     "grounding_height": 1092
+  },
+  "computer": {
+    "python": "D:/Newitem/Agent-S/.venv/Scripts/python.exe",
+    "base_url": "http://192.168.10.106:30015/v1",
+    "model": "ui-tars-1.5-7b-awq",
+    "api_key": "EMPTY",
+    "max_loop": 25,
+    "loop_interval_ms": 1000,
+    "language": "zh",
+    "max_pixels": 12845056,
+    "pad_top": 0,
+    "thinking": true,
+    "scroll_clicks": 4
   }
 }
