@@ -19,6 +19,7 @@ from agent.core.wechat_reply_flow import database_path
 from agent.desktop_runner import ModelDialog, Runner, open_mail_window
 from agent.tools import history
 from agent.tools.reply_store import ReplyStore
+from .action_overlay import ActionOverlay
 from .computer_page import ComputerPage
 
 
@@ -311,6 +312,8 @@ class MainWindow(QMainWindow):
         self.tray_count = None
         self.runner = listener if listener is not None else Runner(self)
         self.worker = worker if worker is not None else ComputerRunner(self)
+        self.action_overlay = ActionOverlay(app)
+        self.destroyed.connect(self.action_overlay.deleteLater)
         self.session = Session(self.runner, self.worker, self.show_computer_state, self.computer_finished)
         self.setObjectName('mainWindow')
         self.setStyleSheet(STYLE)
@@ -358,8 +361,7 @@ class MainWindow(QMainWindow):
         if show_tray:
             self.tray.show()
         self.runner.changed.connect(self.show_runner)
-        self.worker.event.connect(self.computer_page.apply_event)
-        self.worker.event.connect(self.update_tray_tooltip)
+        self.worker.event.connect(self.apply_computer_event)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(900)
@@ -375,6 +377,9 @@ class MainWindow(QMainWindow):
         self.run_state = text_label('未在监听', 'run')
         self.run_state.setWordWrap(True)
         row.addWidget(self.run_state, 1)
+        self.whitelist_button = QPushButton('回复名单', objectName='plain')
+        self.whitelist_button.clicked.connect(self.open_whitelist)
+        row.addWidget(self.whitelist_button)
         self.toggle = QPushButton('开始自动回复', objectName='listenToggle')
         self.toggle.clicked.connect(self.toggle_listen)
         row.addWidget(self.toggle)
@@ -405,6 +410,19 @@ class MainWindow(QMainWindow):
         self.mail_items = Handoffs([(MAIL, False)], reply_db, '邮件待核对', self.can_resolve)
         layout.addWidget(self.mail_items, 1)
         return page
+
+    def open_whitelist(self):
+        """打开回复名单对话框（非模态：读取时要先藏起来，模态对话框一藏 exec 就返回了）。
+        自动回复或电脑助手在跑时，对话框里只能看、不能读取和保存。"""
+        from .whitelist_dialog import WhitelistDialog
+        if getattr(self, 'whitelist_dialog', None) is not None and self.whitelist_dialog.isVisible():
+            self.whitelist_dialog.raise_()
+            return
+        self.whitelist_dialog = WhitelistDialog(
+            lambda: not self.runner.running() and not self.runner.stopping and self.can_resolve(),
+            self.hide, self.show, None)
+        self.whitelist_dialog.setStyleSheet(STYLE)
+        self.whitelist_dialog.show()
 
     def can_resolve(self):
         """助手忙或托盘正在退出时返回 False。"""
@@ -448,12 +466,33 @@ class MainWindow(QMainWindow):
 
     def show_computer_state(self):
         """同步助手按钮和自动回复入口。"""
+        if self.session.state == 'running':
+            self.action_overlay.start()
+            self.worker.overlay_sync = self.action_overlay.isVisible()
+        else:
+            self.action_overlay.finish()
         can_open = self.can_resolve()
         self.open_action.setEnabled(can_open)
         self.computer_action.setEnabled(can_open)
         self.computer_page.set_state(can_open, self.session.state in ('waiting', 'running'),
                                      self.session.can_restore)
         self.show_runner()
+
+    def apply_computer_event(self, event):
+        """把截图握手交给效果层，把其余步骤交给回看页。"""
+        name = event['event']
+        was_visible = self.action_overlay.isVisible()
+        self.action_overlay.apply_event(event)
+        if name == 'capturing':
+            n, run_dir = event['n'], self.worker.run_dir
+            if was_visible:
+                # 等桌面刷新，避免确认文件先于透明窗口消失。
+                QTimer.singleShot(60, self, lambda: self.worker.acknowledge_overlay_hidden(n, run_dir))
+            else:
+                self.worker.acknowledge_overlay_hidden(n, run_dir)
+        elif name != 'captured':
+            self.computer_page.apply_event(event)
+            self.update_tray_tooltip()
 
     def update_tray_tooltip(self, *_):
         """刷新任务进度和总用时，空闲时显示监听状态和待处理数。"""
@@ -499,6 +538,7 @@ class MainWindow(QMainWindow):
 
     def quit_listen(self):
         """确认监听退出后关闭应用。"""
+        self.action_overlay.finish()
         self.runner.stop(then=self.app.quit)
 
     def on_tray(self, reason):

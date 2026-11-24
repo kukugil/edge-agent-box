@@ -17,6 +17,7 @@ import uiautomation as auto
 
 INPUT_ID = 'chat_input_field'
 ITEM_PREFIX = 'session_item_'
+SESSION_LIST = 'session_list'
 
 
 class WeChatUIA:
@@ -128,9 +129,11 @@ class WeChatUIA:
             return None
         from agent.tools import scroll
         x, y = (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
-        for _ in range(3):
-            scroll(x, y, -15)
-            time.sleep(0.2)
+        # 回到最上面用双击气泡：11/21 实测微信每次滚轮只走约 1 行，原来"往上滚 15 格 × 3 次"回不到顶
+        if not self.back_to_top():
+            for _ in range(3):
+                scroll(x, y, -15)
+                time.sleep(0.2)
         for _ in range(pages):
             it = self._item_now(title)
             if it is not None:
@@ -206,3 +209,60 @@ class WeChatUIA:
                     and auto.GetFocusedControl().AutomationId == INPUT_ID)
         except Exception:
             return False
+
+    def _list(self):
+        try:
+            lst = self._root.ListControl(AutomationId=SESSION_LIST, searchDepth=20)
+            return lst if lst.Exists(0, 0) else None
+        except Exception:
+            return None
+
+    def at_top(self) -> bool | None:
+        """会话列表是不是在最上面：第一行贴着列表顶。读不到交回 None（调用方别据此动手）。
+
+        为什么要管：列表只渲染看得见的十来行，滚到下面以后，白名单会话的行不在控件树里，
+        红点和预览都看不到，新消息就漏了（11/21 真机）。新消息会把会话顶到最上面，所以列表在顶部就够了。"""
+        lst = self._list()
+        if lst is None:
+            return None
+        try:
+            tops = [c.BoundingRectangle.top for c in lst.GetChildren()
+                    if c.AutomationId.startswith(ITEM_PREFIX) and c.BoundingRectangle.height() > 0]
+            if not tops:
+                return None
+            return abs(min(tops) - lst.BoundingRectangle.top) <= 2
+        except Exception:
+            return None
+
+    def back_to_top(self) -> bool:
+        """双击左栏绿色气泡，让会话列表回到最上面。不打开任何会话（11/21 实测 3 次）。输出：回到顶了没有。
+
+        读屏接口只能"点一下"，双击只能用鼠标，所以调用方要先确认人停手了。
+        点之前核对气泡那个位置露在外面、属于这个微信窗口；被别的窗口挡住就不点。点完把鼠标放回原处。"""
+        import ctypes
+        user32 = ctypes.windll.user32
+
+        class _P(ctypes.Structure):
+            _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+        try:
+            bar = self._root.ToolBarControl(ClassName='mmui::MainTabBar', searchDepth=10)
+            tab = next((c for c in bar.GetChildren() if c.ClassName == 'mmui::XTabBarItem' and c.Name == '微信'), None)
+            if tab is None:
+                return False
+            r = tab.BoundingRectangle
+            x, y = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+            if user32.GetAncestor(user32.WindowFromPoint(_P(x, y)), 2) != self.hwnd:
+                return False
+            home = _P()
+            user32.GetCursorPos(ctypes.byref(home))
+            user32.SetCursorPos(x, y)
+            time.sleep(0.1)
+            for _ in range(2):
+                user32.mouse_event(0x0002, 0, 0, 0, 0)
+                user32.mouse_event(0x0004, 0, 0, 0, 0)
+                time.sleep(0.08)
+            time.sleep(1.0)
+            user32.SetCursorPos(home.x, home.y)
+        except Exception:
+            return False
+        return self.at_top() is True

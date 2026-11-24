@@ -3,10 +3,11 @@
 import base64
 import io
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 from PIL import Image
 
@@ -36,9 +37,14 @@ class WorkerTests(unittest.TestCase):
         self.wait = Mock()
         self.events = []
 
-    def run_task(self):
+    def run_task(self, **kwargs):
+        """运行假任务并记录事件，返回 worker 的结果。"""
         return worker.run_loop('测试', self.config, self.shots, self.capture, self.predict, self.perform,
-                               lambda event, **kw: self.events.append((event, kw)), self.check, self.wait)
+                               self.record_event, self.check, self.wait, **kwargs)
+
+    def record_event(self, event, **fields):
+        """记录 worker 发出的事件，供假设备检查事件顺序。"""
+        self.events.append((event, fields))
 
     def test_all_25_rounds_including_empty_and_unknown_actions(self):
         self.predict.side_effect = ['无法解析', 'future_action()'] + ['wait()'] * 23
@@ -60,6 +66,99 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.events[-1][1]['point'], self.perform.call_args_list[0].args[1])
         self.assertIn('finished', self.events[-1][1]['action'])
         self.wait.assert_not_called()
+
+    def test_executing_reports_current_target_before_each_action(self):
+        """执行前报告点击和拖动的目标，输入动作不继承落点。"""
+        image = Image.new('RGB', (336, 252), 'black')
+        self.capture.return_value = image, image.size
+        self.predict.return_value = (
+            "click(point=(56,42))\n\ndrag(start_box=(28,21), end_box=(84,63))"
+            "\n\ntype(content='私密原文')\n\nfinished()"
+        )
+        observed = []
+
+        def perform(action, point, end):
+            """记录执行开始时最后一个事件，并返回当前动作落点。"""
+            observed.append(self.events[-1])
+            return point
+
+        self.perform.side_effect = perform
+        self.assertEqual(self.run_task(), ('DONE', ''))
+        self.assertEqual([(e, f['kind'], f['target'], f['end']) for e, f in observed], [
+            ('executing', 'click', (56, 42), None),
+            ('executing', 'drag', (28, 21), (84, 63)),
+            ('executing', 'type', None, None),
+        ])
+        self.assertNotIn('point', observed[-1][1])
+        self.assertEqual(self.events[-1][1]['point'], (28, 21))
+        self.assertFalse(any(event in ('capturing', 'captured') for event, _ in self.events))
+
+    def test_overlay_sync_waits_for_each_capture_ack(self):
+        """逐步等待确认，核对发出 capturing 后才调用假截图。"""
+        self.predict.side_effect = ['wait()', 'finished()']
+        captures = []
+
+        def acknowledge(seconds):
+            """模拟一次轮询之后才写入本步确认，不进行真实等待。"""
+            self.assertLessEqual(seconds, 0.02)
+            self.assertEqual(self.capture.call_count, len(captures))
+            name, fields = self.events[-1]
+            self.assertEqual(name, 'capturing')
+            (self.shots / f'overlay-hidden-{fields["n"]}').touch()
+
+        def capture():
+            """记录截图时最后一个事件，返回合成图。"""
+            captures.append(self.events[-1])
+            return self.image, self.image.size
+
+        self.capture.side_effect = capture
+        with patch.object(worker.time, 'sleep', side_effect=acknowledge) as sleep:
+            self.assertEqual(self.run_task(overlay_sync=True), ('DONE', ''))
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(captures, [('capturing', {'n': 1}), ('capturing', {'n': 2})])
+        self.assertEqual([f for e, f in self.events if e == 'captured'],
+                         [{'n': 1, 'hidden': True}, {'n': 2, 'hidden': True}])
+
+    def test_overlay_sync_timeout_still_captures(self):
+        """无确认时最多轮询一秒，并按未确认状态继续截图。"""
+        self.predict.return_value = 'finished()'
+        now = 0.0
+
+        def sleep(seconds):
+            """推进假时钟，并检查超时前尚未开始截图。"""
+            nonlocal now
+            self.assertLessEqual(seconds, 0.02)
+            self.capture.assert_not_called()
+            now += seconds
+
+        with (patch.object(worker.time, 'monotonic', side_effect=lambda: now),
+              patch.object(worker.time, 'sleep', side_effect=sleep),
+              patch.object(sys, 'stderr', new_callable=io.StringIO) as stderr):
+            self.assertEqual(self.run_task(overlay_sync=True), ('DONE', ''))
+        self.capture.assert_called_once_with()
+        self.assertAlmostEqual(now, 1)
+        self.assertIn('隐藏确认超时', stderr.getvalue())
+        self.assertEqual(self.events[:2], [('capturing', {'n': 1}), ('captured', {'n': 1, 'hidden': False})])
+
+    def test_overlay_sync_stop_interrupts_wait_before_capture(self):
+        """等待期间一旦出现停止文件，本步便停止在截图前。"""
+        stop = self.shots / 'stop'
+        self.check.side_effect = lambda: worker.check_stop(stop)
+        with patch.object(worker.time, 'sleep', side_effect=lambda _: stop.touch()) as sleep:
+            with self.assertRaises(worker.Stopped):
+                self.run_task(overlay_sync=True)
+        sleep.assert_called_once()
+        self.capture.assert_not_called()
+        self.assertEqual(self.events, [('capturing', {'n': 1})])
+
+    def test_overlay_sync_flag_reaches_worker(self):
+        """用假任务核对 CLI 将 --overlay-sync 传入运行入口。"""
+        args = ['worker.py', '--task=测试', '--run-dir', str(self.shots), '--overlay-sync']
+        with (patch.object(sys, 'argv', args), patch.object(sys, 'stdin', io.StringIO('{}')),
+              patch.object(sys, 'stdout', io.StringIO()), patch.object(worker, 'join_job'),
+              patch.object(worker, 'run_task', return_value=('DONE', '')) as task):
+            worker.main()
+        self.assertIs(task.call_args.kwargs['overlay_sync'], True)
 
     def test_call_user_parse_failure_and_stop_after_action(self):
         self.predict.return_value = 'Thought: 请登录\nAction: call_user()'

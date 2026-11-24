@@ -74,3 +74,16 @@ git -c core.autocrlf=false diff --check
 
 - Spark 接受 `thinking: disabled` 参数，`stream: false` 正常。单次请求 1.5–3.2 秒。
 - 结论：全屏原图时，贴顶边的元素**没有**偏下的问题。旧实验里偏 28px，应该和截局部图、压缩到约 100 万像素有关。`pad_top` 保持 0。
+
+## 11/21 操作演示层门槛实验（Claude）
+
+方案：`C:\Users\Administrator\.claude\plans\buzzing-tinkering-thompson.md`（v2，已经 Codex 只读审核）。测试效果层：PySide6 全屏透明窗口，`WindowTransparentForInput` + `WA_TranslucentBackground`，扩展样式 `0x80800a8`（分层 + 穿透）。截图用 worker 同一个解释器（Agent-S `.venv`）的 `pyautogui.screenshot()`，另用 `ImageGrab.grab(include_layered_windows=True)` 近似录屏软件。
+
+| 项目 | 结果 |
+|---|---|
+| 点击穿透（脚本点击，落在透明区和圆环线上） | 通过：3 轮计数 +3、+2、+2（第一轮多 1 次，原因未查），前台窗口不变 |
+| 不设 WDA，worker 截图 | **能截到效果层**（品红采样点 10019，与录屏式截法相同） |
+| `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`，显示后立刻 / 1 秒后调用 | **失败**：返回 0，错误码 8，实际亲和值仍为 0，截图照样有效果层 |
+| `WDA_MONITOR`，1 秒后调用 | 同样失败，错误码 8 |
+
+结论：按方案判定"两种都截得到"，停止，不启用特效。WDA 在 Qt 透明分层窗口上设不上（推测与 Qt 用 UpdateLayeredWindow 画透明窗有关，未查证）。

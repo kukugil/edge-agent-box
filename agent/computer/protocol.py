@@ -24,7 +24,7 @@ class EventLines:
             if not isinstance(event, dict):
                 continue
             kind = event.get('event')
-            if kind in ('thinking', 'executing', 'executed'):
+            if kind in ('capturing', 'captured', 'thinking', 'executing', 'executed'):
                 n = event.get('n')
                 if type(n) is int and 1 <= n <= self.max_loop:
                     yield event

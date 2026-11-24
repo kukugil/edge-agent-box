@@ -190,7 +190,22 @@ def request_prediction(create, config, chat, wait, check, errors):
             raise RuntimeError(f'Spark HTTP 错误（{exc.status_code}）') from exc
 
 
-def run_loop(task, config, shots, capture, predict, perform, emit, check, wait):
+def wait_for_overlay(shots, n, check):
+    """在运行目录内等待指定步骤的隐藏确认，返回是否收到。"""
+    flag = shots / f'overlay-hidden-{n}'
+    deadline = time.monotonic() + 1
+    while True:
+        check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print(f'第 {n} 步效果层隐藏确认超时', file=sys.stderr)
+            return False
+        if flag.is_file():
+            return True
+        time.sleep(min(remaining, 0.02))
+
+
+def run_loop(task, config, shots, capture, predict, perform, emit, check, wait, *, overlay_sync=False):
     """运行截图轮次，通过回调执行动作和发送事件，返回 (结果, 说明)。"""
     first = uitars.instruction(task, language=config['language'])
     turns = []
@@ -198,7 +213,13 @@ def run_loop(task, config, shots, capture, predict, perform, emit, check, wait):
     for n in range(1, config['max_loop'] + 1):
         check()
         started = time.monotonic()
+        if overlay_sync:
+            emit('capturing', n=n)
+            hidden = wait_for_overlay(shots, n, check)
+            check()
         image, screen = capture()
+        if overlay_sync:
+            emit('captured', n=n, hidden=hidden)
         shot = shots / f'{n:02d}.png'
         image.save(shot, format='PNG')
         frame, image_size = model_image(image, pad_top, config['max_pixels'])
@@ -207,6 +228,7 @@ def run_loop(task, config, shots, capture, predict, perform, emit, check, wait):
         emit('thinking', **fields)
         labels = []
         result = None
+        last_point = None
         try:
             prediction = predict(uitars.messages(first, turns))
             check()
@@ -217,14 +239,15 @@ def run_loop(task, config, shots, capture, predict, perform, emit, check, wait):
                 check()
                 labels.append(describe(action))
                 fields['action'] = ' / '.join(labels)
-                emit('executing', **fields)
+                point = uitars.screen_point(action.params.get('start_box'), screen, image_size, pad_top)
+                end = uitars.screen_point(action.params.get('end_box'), screen, image_size, pad_top)
+                direction = action.params.get('direction', '').lower() if action.name == 'scroll' else ''
+                emit('executing', **fields, target=point, end=end, kind=action.name, direction=direction)
                 if action.name in ('finished', 'call_user'):
                     result = ('DONE', '') if action.name == 'finished' else ('CALL_USER', action.thought)
                     break
                 if action.name == 'error_env':
                     raise RuntimeError('执行异常：模型报告环境错误')
-                point = uitars.screen_point(action.params.get('start_box'), screen, image_size, pad_top)
-                end = uitars.screen_point(action.params.get('end_box'), screen, image_size, pad_top)
                 try:
                     actual = perform(action, point, end)
                 except Stopped:
@@ -232,9 +255,11 @@ def run_loop(task, config, shots, capture, predict, perform, emit, check, wait):
                 except Exception as exc:
                     raise RuntimeError(f'执行异常（{action.name}，{type(exc).__name__}）') from exc
                 if actual is not None:
-                    fields['point'] = actual
+                    last_point = actual
                 check()
         finally:
+            if last_point is not None:
+                fields['point'] = last_point
             emit('executed', seconds=time.monotonic() - started, **fields)
         if result is not None:
             return result
@@ -242,7 +267,7 @@ def run_loop(task, config, shots, capture, predict, perform, emit, check, wait):
     return 'STEP_LIMIT', ''
 
 
-def run_task(task, config, shots, stop_file, emit):
+def run_task(task, config, shots, stop_file, emit, *, overlay_sync=False):
     """绑定真实截图、模型连接和键鼠，再返回本次任务结果。"""
     import openai
     import pyautogui
@@ -271,7 +296,8 @@ def run_task(task, config, shots, stop_file, emit):
             """执行给定动作，返回实际使用的落点。"""
             return execute(action, point, end, pyautogui, pyperclip, wait, check, config['scroll_clicks'])
 
-        return run_loop(task, config, shots, capture, predict, perform, emit, check, wait)
+        return run_loop(task, config, shots, capture, predict, perform, emit, check, wait,
+                        overlay_sync=overlay_sync)
 
 
 def main():
@@ -279,6 +305,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--task', required=True)
     parser.add_argument('--run-dir', type=Path, required=True)
+    parser.add_argument('--overlay-sync', action='store_true')
     args = parser.parse_args()
     output = sys.stdout
 
@@ -292,7 +319,8 @@ def main():
         job = join_job() if os.name == 'nt' else None
         emit('start')
         with contextlib.redirect_stdout(sys.stderr):
-            result, detail = run_task(args.task, config, args.run_dir, args.run_dir / 'stop', emit)
+            result, detail = run_task(args.task, config, args.run_dir, args.run_dir / 'stop', emit,
+                                      overlay_sync=args.overlay_sync)
     except Stopped:
         result, detail = 'STOPPED', '已停止'
     except (RuntimeError, ValueError) as exc:

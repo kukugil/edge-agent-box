@@ -194,8 +194,23 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(Path(program), Path(sys.executable))
         self.assertTrue(any(arg.endswith('worker.py') for arg in args))
         self.assertIn('--task=--任务', args)
+        self.assertNotIn('--overlay-sync', args)
         self.assertEqual(self.runner.run_dir.parent, self.root / 'edge-agent' / 'computer' / 'runs')
         self.assertNotIn('secret', json.loads(self.process.write.call_args.args[0]))
+
+    def test_overlay_flag_and_ack_stay_with_current_run(self):
+        """只为启用效果的进程传参数，迟到确认不能写入下一轮。"""
+        old_dir = self.runner.run_dir
+        self.process.finished.emit(0, QProcess.ExitStatus.NormalExit)
+        self.runner.overlay_sync = True
+        self.runner.start('有操作效果的任务')
+        self.assertIn('--overlay-sync', self.runner.process.start.call_args.args[1])
+        new_dir = self.runner.run_dir
+        self.runner.acknowledge_overlay_hidden(1, old_dir)
+        self.assertFalse((old_dir / 'overlay-hidden-1').exists())
+        self.assertFalse((new_dir / 'overlay-hidden-1').exists())
+        self.runner.acknowledge_overlay_hidden(1, new_dir)
+        self.assertTrue((new_dir / 'overlay-hidden-1').is_file())
 
     def test_done_waits_for_exit_and_only_reports_once(self):
         self.process.data = b'{"event":"done","result":"DONE"}\n'

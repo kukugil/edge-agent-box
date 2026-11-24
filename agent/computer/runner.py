@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -35,6 +36,7 @@ class ComputerRunner(QObject):
         self.config_path = config_path or Path(__file__).resolve().parents[1] / 'config.json'
         self.process_factory = process_factory
         self.process = None
+        self.overlay_sync = False
         self.killer = None
         self.stop_timer = QTimer(self)
         self.stop_timer.setSingleShot(True)
@@ -70,11 +72,24 @@ class ComputerRunner(QObject):
         process.errorOccurred.connect(self._error)
         worker = Path(__file__).resolve().with_name('worker.py')
         interpreter = str(Path(config['python']).expanduser().resolve())
-        process.start(interpreter, ['-u', '-B', '-E', '-X', 'utf8', str(worker), '--task=' + task,
-                                    '--run-dir', str(self.run_dir)])
+        args = ['-u', '-B', '-E', '-X', 'utf8', str(worker), '--task=' + task,
+                '--run-dir', str(self.run_dir)]
+        if self.overlay_sync:
+            args.append('--overlay-sync')
+        process.start(interpreter, args)
         if self.process is process:
             process.write(json.dumps(config).encode('utf-8'))
             process.closeWriteChannel()
+
+    def acknowledge_overlay_hidden(self, n, run_dir):
+        """为当前运行目录写指定步骤的确认文件，忽略上一轮的定时回调。"""
+        if self.process is None or run_dir != self.run_dir:
+            return
+        try:
+            (run_dir / f'overlay-hidden-{n}').touch()
+        except OSError as exc:
+            # 确认失败时由 worker 超时继续，不能中断当前任务。
+            logging.warning('第 %s 步效果层隐藏确认写入失败（%s）', n, type(exc).__name__)
 
     def stop(self):
         """写入当前任务的停止文件，并给 worker 五秒清理时间。"""

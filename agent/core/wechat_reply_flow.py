@@ -21,6 +21,9 @@ IDLE_WAKE = 60
 RETRY_BACKOFF = (5, 15, 30, 60)
 # 会话行预览多久查一次：每次要走一遍控件树
 PREVIEW_EVERY = 2.0
+# 会话列表不在顶部时（人滚下去了），多久查一次、人停手几秒后双击气泡拉回顶部（11/21 真机：滚到底后漏消息）
+TOP_EVERY = 5.0
+TOP_IDLE = 10
 
 
 def database_path(mode):
@@ -71,6 +74,10 @@ class Listener:
         self.previews = {}     # 会话 → 上次看到的会话行文字
         self.next_preview = 0.0
         self.next_wake = 0.0
+        self.next_top = 0.0
+        self.top_waiting = False
+        self.human = None      # run() 里装上真人输入钩子；没装上时退回 idle_seconds
+        self.human_since = time.monotonic()
 
     def _single_window(self):
         """双开或主窗口变化时，停止操作原来绑定的窗口。"""
@@ -227,12 +234,26 @@ class Listener:
         stop：托盘点"停止"时变成 True。只在两轮之间查：一轮里的发送要么做完要么没开始，不会把稿子留在输入框。
         """
         deadline = time.monotonic() + seconds
+        from agent.tools.human_input import HumanInput
+        self.human = HumanInput().start()
+        self.human_since = time.monotonic()
+        try:
+            self._run(deadline, stop)
+        finally:
+            self.human.stop()
+
+    def _run(self, deadline, stop):
         self.store.recover()
         # 先 prepare 把微信拉到前面再核对能否响应，和旧入口一致；反过来做，人在别的窗口时一启动就失败
         if (not self._single_window() or not trigger.prepare(self.hwnd)
-                or not check_responsive(self.hwnd)[0]
-                or not any(self.adapter.unique(title) for title in self.titles)):
+                or not check_responsive(self.hwnd)[0]):
             raise RuntimeError('未找到可唯一定位的白名单测试会话')
+        # 11/21 真机：启动时会话列表被滚到下面，白名单会话的行不在控件树里，一启动就退出。
+        # 启动本来就把微信切到了前台，这里先双击气泡回到顶部再核对
+        if not any(self.adapter.unique(title) for title in self.titles):
+            self.adapter.back_to_top()
+            if not any(self.adapter.unique(title) for title in self.titles):
+                raise RuntimeError('未找到可唯一定位的白名单测试会话')
         while time.monotonic() < deadline:
             if stop():
                 self.log('已停止监听')
@@ -257,6 +278,8 @@ class Listener:
                 if observed != self.last_view:
                     self._collect(shot)
                     self.last_view = observed
+            if not minimized:
+                self._keep_top(front)
             self._poll_previews()
             if self.mail is not None:
                 self.mail.poll()
@@ -290,6 +313,39 @@ class Listener:
                 self._handed_over()
             else:
                 time.sleep(trigger.POLL)
+
+    def _human_idle(self) -> float:
+        """真人多少秒没碰键鼠。钩子分得清程序自己的点击；钩子没装上就退回 GetLastInputInfo（会被程序的输入清零，偏保守）。"""
+        if self.human is not None and self.human.ok:
+            return time.monotonic() - max(self.human.last, self.human_since)
+        return idle_seconds()
+
+    def _keep_top(self, front):
+        """会话列表被人滚到下面时，等人停手再双击气泡拉回顶部；否则白名单会话的行不在控件树里，新消息发现不了。
+        微信在前台：人停手 TOP_IDLE 秒就拉；被别的窗口挡着：和"切回前台"一样等 IDLE_WAKE 秒。"""
+        now = time.monotonic()
+        if now < self.next_top:
+            return
+        self.next_top = now + TOP_EVERY
+        if self.adapter.at_top() is not False:      # 在顶部，或读不到（读不到不动手）
+            self.top_waiting = False
+            return
+        idle = self._human_idle()
+        need = TOP_IDLE if front else IDLE_WAKE
+        if idle < need:
+            if not self.top_waiting:
+                self.log(f'会话列表不在最上面，新消息可能看不到：等键鼠停 {need} 秒后拉回顶部')
+            self.top_waiting = True
+            return
+        if not front and not trigger.prepare(self.hwnd):
+            self.next_top = now + 30
+            return
+        ok = self.adapter.back_to_top()
+        self.top_waiting = False
+        self._handed_over()
+        self.log('已把会话列表拉回顶部' if ok else '没能把会话列表拉回顶部（气泡被挡住或没反应），30 秒后再试')
+        if not ok:
+            self.next_top = now + 30
 
     def _handed_over(self):
         """程序用完屏幕：记下此刻的前台窗口和时刻。"""
