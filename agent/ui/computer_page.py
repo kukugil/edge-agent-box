@@ -1,10 +1,12 @@
 """电脑助手任务输入、步骤回看和点击位置。"""
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
+
+from . import paper
 
 
 def image_rect(image_size, area):
@@ -32,6 +34,8 @@ def marker_position(click, screen_size, drawn_rect):
 class Preview(QWidget):
     """将原始截图和落点画在同一绘制区域。"""
 
+    imageChanged = Signal()
+
     def __init__(self):
         """初始化无截图的预览区域。"""
         super().__init__()
@@ -44,17 +48,20 @@ class Preview(QWidget):
 
     def set_step(self, step):
         """载入选中步骤的截图和原屏坐标，并触发重绘。"""
+        was_empty = self.image.isNull()
         self.image = QPixmap(step.get('shot', ''))
         self.click = step.get('point')
         self.screen = step.get('screen')
         self.update()
+        if was_empty != self.image.isNull():
+            self.imageChanged.emit()
 
     def paintEvent(self, event):
         """按当前可用区域画截图，缩放后用红圈和中心点标记点击。"""
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor('#edf0f5'))
+        painter.fillRect(self.rect(), QColor('#ece0cc'))
         if self.image.isNull():
-            painter.setPen(QColor('#606875'))
+            painter.setPen(QColor(paper.NIGHT))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, '暂无步骤截图')
             return
         size = (self.image.width(), self.image.height())
@@ -86,24 +93,34 @@ class ComputerPage(QWidget):
         self.items = {}
         self.steps = {}
         self.progress = ''
-        layout = QHBoxLayout(self)
-        left = QWidget()
-        form = QVBoxLayout(left)
+        page = QVBoxLayout(self)
+        page.setContentsMargins(0, 0, 4, 4)
+        page.setSpacing(16)
+        bar = paper.slip()
+        buttons = QHBoxLayout(bar)
+        buttons.setContentsMargins(16, 12, 14, 12)
+        buttons.setSpacing(10)
         self.task = QLineEdit(objectName='computerTask')
         self.task.setPlaceholderText('输入要电脑完成的任务')
         self.task.setAccessibleName('电脑任务')
         self.task.returnPressed.connect(self._submit)
         self.start_button = QPushButton('开始')
         self.start_button.clicked.connect(self._submit)
-        self.stop_button = QPushButton('停止')
+        self.stop_button = QPushButton('停止', objectName='danger')
         self.stop_button.clicked.connect(stop)
         self.stop_button.setEnabled(False)
         self.submit = start
-        form.addWidget(self.task)
-        buttons = QHBoxLayout()
+        buttons.addWidget(self.task, 1)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
-        form.addLayout(buttons)
+        page.addWidget(bar)
+        layout = QHBoxLayout()
+        layout.setSpacing(22)
+        page.addLayout(layout, 1)
+        left = paper.slip()
+        form = QVBoxLayout(left)
+        form.setContentsMargins(16, 16, 12, 12)
+        form.setSpacing(10)
         self.status = QLabel('等待任务')
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
@@ -120,11 +137,17 @@ class ComputerPage(QWidget):
         form.addWidget(self.restore_feedback)
         self.list = QListWidget(objectName='computerSteps')
         self.list.setAccessibleName('操作步骤')
+        self.list.setItemDelegate(paper.CardDelegate('step', self.list))
+        self.list.setMouseTracking(True)
         self.list.currentItemChanged.connect(self._select)
         form.addWidget(self.list, 1)
         layout.addWidget(left, 2)
+        right = paper.slip()
+        frame = QVBoxLayout(right)
+        frame.setContentsMargins(14, 14, 14, 14)
         self.preview = Preview()
-        layout.addWidget(self.preview, 3)
+        frame.addWidget(self.preview)
+        layout.addWidget(right, 3)
 
     def _submit(self):
         """任务输入有效且空闲时，清空旧步骤并提交。"""

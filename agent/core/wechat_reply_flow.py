@@ -239,6 +239,12 @@ class Listener:
         self.human_since = time.monotonic()
         try:
             self._run(deadline, stop)
+        except RuntimeError as exc:
+            if self.mail is None:
+                raise
+            # 微信那边的问题不该连带邮件（11/23 真机：微信会话没对上就整轮退出，之后来的邮件没人看）
+            self.log(f'状态：监听中（只看邮箱：微信那一路停了，{exc}）')
+            mail_only(self.mail, deadline, stop, self.log)
         finally:
             self.human.stop()
 
@@ -373,14 +379,49 @@ class Listener:
         return False
 
 
+def mail_only(mail, deadline, stop, log=print):
+    """微信那一路停了（或一开始就没起来）时只盯邮箱。用屏幕的规矩和 Listener._mail_turn 一样：
+    程序刚用完、之后没人碰，或者键鼠停了 IDLE_WAKE 秒，才去点。"""
+    handover = None
+    waiting = False
+    while time.monotonic() < deadline:
+        if stop():
+            log('已停止监听')
+            return
+        mail.poll()
+        if mail.has_work():
+            idle = idle_seconds()
+            ours = (handover is not None and ctypes.windll.user32.GetForegroundWindow() == handover[0]
+                    and idle >= time.monotonic() - handover[1] - 0.5)
+            if idle >= IDLE_WAKE or ours:
+                waiting = False
+                mail.process()
+                handover = (ctypes.windll.user32.GetForegroundWindow(), time.monotonic())
+                continue
+            if not waiting:
+                log(f'有待回复的邮件：等键鼠停 {IDLE_WAKE} 秒后再接管')
+            waiting = True
+        time.sleep(trigger.POLL)
+
+
 def run(hwnd, seconds, titles, *, mode, path=None, stop=lambda: False, mail_hwnd=None, allowed_mail=()):
-    """受控演练入口。两个模式都需要显式指定测试会话。mail_hwnd 给了就同时盯 QQ 邮箱（只在发送模式）。"""
+    """受控演练入口。两个模式都需要显式指定测试会话。
+
+    allowed_mail 非空就同时盯 QQ 邮箱（只在发送模式）；mail_hwnd 可以是 None，邮箱窗口开好后自动接上。
+    hwnd 为 None：微信没起来，只看邮箱。
+    """
     path = Path(path) if path else database_path(mode)
     with listener_lock(database_path(mode)):
         store = ReplyStore(path, mode=mode)
         mail = None
-        if mail_hwnd and mode == 'send':
+        if allowed_mail and mode == 'send':
             from agent.core.mail_flow import MailWatcher
             mail = MailWatcher(mail_hwnd, store, allowed_mail)
+        if hwnd is None:
+            if mail is None:
+                raise RuntimeError('微信和邮箱都没接入')
+            store.recover()
+            mail_only(mail, time.monotonic() + seconds, stop)
+            return
         Listener(hwnd, titles, store, preview=mode == 'preview', mail=mail).run(seconds, stop)
 

@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from agent.core import mail_flow, wechat_reply_flow
-from agent.core.mail_flow import MAIL, MailWatcher, inbox_rows, wanted
+from agent.core.mail_flow import MAIL, MailWatcher, inbox_rows, skip_reason, wanted
 from agent.tools.reply_store import ReplyStore
 
 ME = 'tester@example.test'
@@ -38,6 +38,19 @@ class TestInbox(unittest.TestCase):
         rows = inbox_rows(inbox(NEW, OLD))
         self.assertEqual([(r['sender'], r['time'], r['subject'], r['preview']) for r in rows], [NEW, OLD])
 
+    def test_wide_window_single_line_rows(self):
+        """11/23 真机：窗口宽时发件人、标题、预览、时间在同一行（位置照真机量的）。"""
+        items = [t('收件箱', 269, 92), t('今天', 236, 200, 26), t('(1 封)', 262, 200, 38)]
+        for i, (sender, when, subject, preview) in enumerate((NEW, OLD)):
+            y = 230 + 40 * i
+            items += [t(sender, 294, y, 98), t(subject, 494, y, 37), t(preview, 534, y, 197), t(when, 1763, y, 51)]
+        rows = inbox_rows(items)
+        self.assertEqual([(r['sender'], r['time'], r['subject'], r['preview']) for r in rows], [NEW, OLD])
+        self.assertEqual(rows[0]['box'][0], 494)          # 点开时点的是标题
+        short = ('tester', '23:05', '很长很长的标题', '3点')     # 预览很短又带数字：不能当成时间
+        items = [t(short[0], 294, 230), t(short[2], 494, 230), t(short[3], 760, 230, 30), t(short[1], 1763, 230, 37)]
+        self.assertEqual([(r['subject'], r['time']) for r in inbox_rows(items)], [('很长很长的标题', '23:05')])
+
     def test_only_todays_whitelisted_non_reply_mail_is_wanted(self):
         row = dict(zip(('sender', 'time', 'subject', 'preview'), NEW))
         self.assertTrue(wanted(row, [ME]))
@@ -61,7 +74,8 @@ class TestPoll(unittest.TestCase):
     def poll(self, page, iconic=False):
         self.watcher.next_poll = 0
         with patch.object(mail_flow, 'read_page', return_value=page), \
-             patch.object(mail_flow.user32, 'IsIconic', return_value=iconic):
+             patch.object(mail_flow.user32, 'IsIconic', return_value=iconic), \
+             patch.object(mail_flow.user32, 'IsWindow', return_value=True):
             return self.watcher.poll()
 
     def test_baseline_then_new_mail_is_queued_once(self):
@@ -83,6 +97,88 @@ class TestPoll(unittest.TestCase):
         self.assertEqual(self.poll(inbox(NEW, OLD)), 1)
 
 
+class TestAttachAndSkip(unittest.TestCase):
+    """11/23 真机：先开监听后开邮箱窗口，整轮不看邮件；昵称对不上名单的信被悄悄跳过。"""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.store = ReplyStore(Path(self.tmp.name) / 'reply.db', mode='send')
+        self.logs = []
+        self.found = None
+        self.watcher = MailWatcher(None, self.store, [ME], log=self.logs.append, find=lambda: self.found)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def poll(self, page, alive=True):
+        self.watcher.next_poll = 0
+        self.watcher.next_find = 0
+        with patch.object(mail_flow, 'read_page', return_value=page), \
+             patch.object(mail_flow.user32, 'IsIconic', return_value=False), \
+             patch.object(mail_flow.user32, 'IsWindow', return_value=alive):
+            return self.watcher.poll()
+
+    def test_window_opened_later_is_attached(self):
+        self.assertEqual(self.poll(inbox(OLD)), 0)
+        self.assertFalse(self.watcher.has_work())        # 没窗口时不抢屏幕
+        self.assertIsNone(self.watcher.hwnd)
+        self.found = 77
+        self.assertEqual(self.poll(inbox(OLD)), 0)       # 接上，先记基线
+        self.assertEqual(self.poll(inbox(NEW, OLD)), 1)
+        self.assertEqual(self.logs[:2], ['邮箱窗口接上了', '邮箱已接入：收件箱现有 1 封只作基线'])
+
+    def test_closed_window_is_dropped_and_refound_without_new_baseline(self):
+        self.found = 77
+        self.poll(inbox(OLD))
+        self.found = None
+        self.assertEqual(self.poll(inbox(NEW, OLD), alive=False), 0)
+        self.assertIsNone(self.watcher.hwnd)
+        self.found = 78
+        self.assertEqual(self.poll(inbox(NEW, OLD)), 1)  # 同一个邮箱：基线不清，新信照样登记
+        self.assertIn('邮箱窗口关了：重新点"打开邮箱窗口"后会自动接上', self.logs)
+
+    def test_skipped_mail_is_reported_without_sender_or_subject(self):
+        self.found = 77
+        self.poll(inbox(OLD))
+        stranger = ('某昵称', '1分钟前', '测试1', '收到请回复')
+        self.assertEqual(self.poll(inbox(stranger, ECHO, OLD)), 0)
+        said = [line for line in self.logs if line.startswith('来了')]
+        self.assertEqual(said, ['来了 1 封新邮件，不回：发件人不在邮件名单（名单只认邮箱地址或 QQ 号）'])
+        self.assertNotIn('某昵称', ''.join(self.logs))
+        row = dict(zip(('sender', 'time', 'subject', 'preview'), NEW))
+        self.assertIsNone(skip_reason(row, [ME]))
+        self.assertEqual(skip_reason({**row, 'time': '11/10'}, [ME]), '不是今天的')
+
+
+class TestMailOnly(unittest.TestCase):
+    def test_wechat_failure_keeps_mail_running(self):
+        """微信那一路抛错，邮件照常轮询和处理，直到停止。"""
+        mail = Mock()
+        mail.has_work.side_effect = [True, False, False]
+        stops = iter([False, False, False, True])
+        logs = []
+        listener = wechat_reply_flow.Listener.__new__(wechat_reply_flow.Listener)
+        listener.mail, listener.log = mail, logs.append
+        with patch.object(wechat_reply_flow.Listener, '_run', side_effect=RuntimeError('未找到可唯一定位的白名单测试会话')), \
+             patch('agent.tools.human_input.HumanInput') as hook, \
+             patch.object(wechat_reply_flow, 'idle_seconds', return_value=999), \
+             patch.object(wechat_reply_flow.time, 'sleep'):
+            hook.return_value.start.return_value = hook.return_value
+            listener.run(60, stop=lambda: next(stops))
+        self.assertEqual(mail.poll.call_count, 3)
+        mail.process.assert_called_once()
+        self.assertTrue(logs[0].startswith('状态：监听中（只看邮箱：微信那一路停了'))
+        self.assertEqual(logs[-1], '已停止监听')
+
+    def test_without_mail_wechat_failure_still_stops(self):
+        listener = wechat_reply_flow.Listener.__new__(wechat_reply_flow.Listener)
+        listener.mail, listener.log = None, print
+        with patch.object(wechat_reply_flow.Listener, '_run', side_effect=RuntimeError('x')), \
+             patch('agent.tools.human_input.HumanInput'):
+            with self.assertRaises(RuntimeError):
+                listener.run(60)
+
+
 class TestRefresh(unittest.TestCase):
     def test_title_doorbell_refreshes_inbox_then_finds_new_mail(self):
         """列表不会自己刷新，标题变成"收到 N 封新邮件"时点一下「收件箱」再读。"""
@@ -93,7 +189,8 @@ class TestRefresh(unittest.TestCase):
             title = Mock(side_effect=['QQ邮箱 - Google Chrome', '收到 1 封新邮件 - Google Chrome', '收到 1 封新邮件 - Google Chrome'])
             watcher._front = lambda: None
             watcher._folder = Mock(return_value=inbox(NEW, OLD))
-            with patch.object(mail_flow, 'read_page', side_effect=pages),                  patch.object(mail_flow, '_text', side_effect=lambda fn, h: title()),                  patch.object(mail_flow.user32, 'IsIconic', return_value=False):
+            with patch.object(mail_flow, 'read_page', side_effect=pages),                  patch.object(mail_flow, '_text', side_effect=lambda fn, h: title()),                  patch.object(mail_flow.user32, 'IsIconic', return_value=False), \
+                 patch.object(mail_flow.user32, 'IsWindow', return_value=True):
                 watcher.poll()                              # 基线
                 self.assertFalse(watcher.has_work())
                 watcher.next_poll = 0

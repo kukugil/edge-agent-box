@@ -19,54 +19,48 @@ from agent.core.wechat_reply_flow import database_path
 from agent.desktop_runner import ModelDialog, Runner, open_mail_window
 from agent.tools import history
 from agent.tools.reply_store import ReplyStore
+from . import paper
 from .action_overlay import ActionOverlay
 from .computer_page import ComputerPage
-
-
-STYLE = """
-QWidget { color: #25282e; font-family: 'Microsoft YaHei UI'; font-size: 13px; }
-QMainWindow, QWidget#details { background: white; }
-QWidget#sidebar { background: #f5f6f8; border-right: 1px solid #e6e8ec; }
-QLabel#brand { font-size: 17px; font-weight: bold; }
-QLabel#page { font-size: 26px; font-weight: bold; }
-QLabel#state { color: #73521e; background: #fff4df; border-radius: 6px; padding: 7px 11px; }
-QLabel#title { font-size: 20px; font-weight: bold; }
-QLabel#secondary { color: #606875; }
-QListWidget { background: transparent; border: none; outline: none; }
-QListWidget::item { padding: 11px 10px; border-radius: 8px; margin: 2px 0; }
-QListWidget::item:hover { background: #e9edf4; }
-QListWidget::item:selected { background: #e5edff; color: #2149ac; }
-QTextBrowser { border: 1px solid #e6e8ec; border-radius: 9px; background: #fafbfd; padding: 13px; }
-QPushButton { background: #2f5cdd; color: white; border: 1px solid #2f5cdd;
-              border-radius: 7px; padding: 9px 14px; font-weight: bold; }
-QPushButton:hover { background: #234dc5; }
-QPushButton:focus { border: 2px solid #152d76; }
-QPushButton:disabled { background: #edf0f5; color: #6c7380; border-color: #edf0f5; }
-QPushButton#plain { background: white; color: #2f5cdd; border: 1px solid #c9d3ea; }
-QPushButton#plain:hover { background: #eef2fb; }
-QLabel#run { font-weight: bold; }
-QLabel#recent { color: #606875; font-size: 12px; }
-"""
+from .paper import STYLE
+from .storybook import ASSETS, MONITOR, RoomView
+from .ornaments import Ornaments
 
 
 def box_icon(count=0):
-    """绘制任务栏图标，待处理时加一个醒目的角标。"""
+    """绘制托盘图标：深苔色小屏幕；有待处理时右上角加玫瑰色角标。"""
     canvas = QPixmap(64, 64)
     canvas.fill(Qt.GlobalColor.transparent)
     painter = QPainter(canvas)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor('#2f5cdd'))
+    painter.setPen(QPen(QColor(paper.INK), 3))
+    painter.setBrush(QColor(paper.MOSS))
     painter.drawRoundedRect(QRectF(7, 7, 50, 50), 12, 12)
-    painter.setPen(QPen(QColor('white'), 3))
-    painter.drawRoundedRect(QRectF(18, 20, 28, 21), 3, 3)
+    painter.setPen(QPen(QColor(paper.LIGHT), 3))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(QRectF(18, 19, 28, 21), 3, 3)
     painter.drawLine(24, 47, 40, 47)
     if count:
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor('#f0a845'))
-        painter.drawEllipse(QRectF(44, 4, 17, 17))
+        painter.setPen(QPen(QColor(paper.INK), 2))
+        painter.setBrush(QColor(paper.ROSE))
+        painter.drawEllipse(QRectF(42, 3, 19, 19))
     painter.end()
     return QIcon(canvas)
+
+
+def room_button():
+    """右上角的书房缩略图按钮，点了拉远回房间。"""
+    button = QPushButton(objectName='roomReturn')
+    room = QPixmap(str(ASSETS / 'room.webp'))
+    # 截显示器周围一块，和画里看到的电脑对上。
+    crop = room.copy(MONITOR.adjusted(-60, -20, 60, 40).toRect())
+    button.setIcon(QIcon(crop))
+    button.setIconSize(crop.size().scaled(76, 46, Qt.AspectRatioMode.KeepAspectRatio))
+    button.setFixedSize(80, 50)
+    button.setToolTip('回到房间')
+    button.setAccessibleName('回到房间')
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    return button
 
 
 def text_label(text, style=None):
@@ -93,37 +87,55 @@ class Handoffs(QWidget):
         self.read_failed = {}
         self.transcript_version = None
         layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(24)
         queue = QVBoxLayout()
-        self.count = text_label('待我处理', 'secondary')
-        queue.addWidget(self.count)
+        queue.setSpacing(8)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        self.heading_widget = paper.Heading(heading)
+        top.addWidget(self.heading_widget)
+        # 角标只放数量，零项时藏起来。
+        self.count = text_label('', 'badge')
+        self.count.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top.addWidget(self.count, 0, Qt.AlignmentFlag.AlignTop)
+        top.addStretch()
+        queue.addLayout(top)
         self.list = QListWidget(objectName='handoffList')
         self.list.setAccessibleName('待处理会话')
+        self.list.setItemDelegate(paper.CardDelegate('ticket', self.list))
+        self.list.setMouseTracking(True)
         self.list.currentItemChanged.connect(lambda *_: self.render())
         queue.addWidget(self.list, 1)
         self.errors = text_label('', 'secondary')
         self.errors.setWordWrap(True)
         queue.addWidget(self.errors)
-        layout.addLayout(queue, 1)
+        layout.addLayout(queue, 2)
 
-        details = QWidget(objectName='details')
+        details = paper.slip()
+        self.details = details
+        details.setAccessibleName(heading + '详情')
         content = QVBoxLayout(details)
-        content.setContentsMargins(32, 26, 32, 24)
+        content.setContentsMargins(24, 20, 24, 20)
         content.setSpacing(12)
+        # 没有事项时上下各占一份空白，让空状态那两行字停在卡片中间。
+        self.empty_top = QWidget()
+        content.addWidget(self.empty_top, 1)
         header = QHBoxLayout()
-        header.addWidget(text_label(heading, 'page'))
-        header.addStretch()
-        self.status = text_label('', 'state')
-        header.addWidget(self.status)
-        content.addLayout(header)
         self.title = text_label('', 'title')
         self.title.setWordWrap(True)
-        content.addWidget(self.title)
+        header.addWidget(self.title, 1)
+        self.status = text_label('', 'state')
+        header.addWidget(self.status, 0, Qt.AlignmentFlag.AlignTop)
+        content.addLayout(header)
         self.reason = text_label('', 'secondary')
         self.reason.setWordWrap(True)
         content.addWidget(self.reason)
         self.transcript = QTextBrowser()
         self.transcript.setAccessibleName('最近聊天截图、触发消息和后续消息')
         content.addWidget(self.transcript, 1)
+        self.empty_space = QWidget()
+        content.addWidget(self.empty_space, 1)
         self.feedback = text_label('', 'secondary')
         self.feedback.setWordWrap(True)
         content.addWidget(self.feedback)
@@ -138,7 +150,7 @@ class Handoffs(QWidget):
     def resizeEvent(self, event):
         """尺寸改变后按新宽度绘制截图。"""
         super().resizeEvent(event)
-        QTimer.singleShot(0, self.render)
+        QTimer.singleShot(0, self, self.render)
 
     def refresh(self):
         """刷新本频道事项。读取失败时保留旧项。"""
@@ -183,7 +195,7 @@ class Handoffs(QWidget):
             self.list.blockSignals(True)
             self.list.clear()
             for marker, (name, info) in sorted(items.items(), key=lambda item: item[1][1]['started'], reverse=True):
-                item = QListWidgetItem(f"{name}\n{len(info['followups'])} 条后续消息")
+                item = QListWidgetItem(f"{name}\n{len(info['followups'])} 条后续消息 · {info['started']:%H:%M}")
                 item.setData(Qt.ItemDataRole.UserRole, marker)
                 self.list.addItem(item)
                 if marker == previous:
@@ -191,7 +203,8 @@ class Handoffs(QWidget):
             if self.list.count() and self.list.currentItem() is None:
                 self.list.setCurrentRow(0)
             self.list.blockSignals(False)
-        self.count.setText(f'{self.heading}  ·  {len(items)}')
+        self.count.setText(str(len(items)))
+        self.count.setVisible(bool(items))
         self.render()
 
     def reply_items(self, store, name):
@@ -228,6 +241,10 @@ class Handoffs(QWidget):
         selected = self.items.get(self.current)
         self.status.setVisible(bool(selected))
         self.transcript.setVisible(bool(selected))
+        # 空状态不放灰按钮，只留两行说明。
+        self.empty_space.setVisible(not selected)
+        self.empty_top.setVisible(not selected)
+        self.resume.setVisible(bool(selected))
         self.resume.setEnabled(bool(selected) and self.current not in self.read_failed
                                and self.can_resolve())
         if not selected:
@@ -321,26 +338,46 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(box_icon())
         self.resize(1100, 650)
         self.setMinimumSize(640, 460)
-        main = QWidget()
+        # 主界面整体放进书房画里的电脑屏幕，点电脑拉近后才能操作。
+        main = paper.Desk()
+        main.setStyleSheet(STYLE)
         layout = QHBoxLayout(main)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        self.setCentralWidget(main)
+        layout.setContentsMargins(30, 24, 30, 24)
+        layout.setSpacing(26)
+        self.room = RoomView(main)
+        self.setCentralWidget(self.room)
 
-        sidebar = QWidget(objectName='sidebar')
+        sidebar = paper.slip('sidebar')
+        sidebar.setFixedWidth(168)
         nav = QVBoxLayout(sidebar)
-        nav.setContentsMargins(20, 25, 16, 20)
+        nav.setContentsMargins(13, 20, 0, 16)
+        nav.setSpacing(16)
         nav.addWidget(text_label('端侧盒子', 'brand'))
         self.navigation = QListWidget(objectName='navigation')
+        self.navigation.setItemDelegate(paper.CardDelegate('tab', self.navigation))
+        self.navigation.setMouseTracking(True)
+        self.navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.navigation.addItems(['微信', '邮件', '电脑助手'])
         nav.addWidget(self.navigation, 1)
         self.settings_button = QPushButton('模型设置', objectName='plain')
         self.settings_button.clicked.connect(self.open_settings)
-        nav.addWidget(self.settings_button)
+        settings_row = QHBoxLayout()
+        settings_row.setContentsMargins(0, 0, 13, 0)
+        settings_row.addWidget(self.settings_button)
+        nav.addLayout(settings_row)
         layout.addWidget(sidebar)
 
+        workspace = QVBoxLayout()
+        workspace.setSpacing(14)
+        top = QHBoxLayout()
+        top.addStretch()
+        self.room_button = room_button()
+        self.room_button.clicked.connect(lambda: self.room.show_room())
+        top.addWidget(self.room_button)
+        workspace.addLayout(top)
         self.pages = QStackedWidget(objectName='pages')
-        layout.addWidget(self.pages, 1)
+        workspace.addWidget(self.pages, 1)
+        layout.addLayout(workspace, 1)
         self.pages.addWidget(self.build_wechat([(name, simulate) for name, simulate in contacts if name != MAIL],
                                               reply_db))
         self.pages.addWidget(self.build_mail(reply_db))
@@ -348,10 +385,11 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.computer_page)
         self.navigation.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.navigation.setCurrentRow(0)
+        self.ornaments = Ornaments(self)
 
         self.tray = QSystemTrayIcon(box_icon(), self)
         self.menu = QMenu(self)
-        self.open_action = self.menu.addAction('打开端侧盒子', self.open_window)
+        self.open_action = self.menu.addAction('打开端侧盒子', lambda: self.open_window())
         self.listen_action = self.menu.addAction('开始自动回复', self.toggle_listen)
         self.computer_action = self.menu.addAction('电脑助手', self.open_computer)
         self.computer_stop = self.menu.addAction('停止电脑助手', self.session.stop)
@@ -373,7 +411,12 @@ class MainWindow(QMainWindow):
         """返回包含监听状态、开关、最近动态和微信事项的页面。"""
         page = QWidget(objectName='wechatPage')
         layout = QVBoxLayout(page)
-        row = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 4, 4)
+        layout.setSpacing(16)
+        bar = paper.slip()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(18, 12, 14, 12)
+        row.setSpacing(12)
         self.run_state = text_label('未在监听', 'run')
         self.run_state.setWordWrap(True)
         row.addWidget(self.run_state, 1)
@@ -383,7 +426,7 @@ class MainWindow(QMainWindow):
         self.toggle = QPushButton('开始自动回复', objectName='listenToggle')
         self.toggle.clicked.connect(self.toggle_listen)
         row.addWidget(self.toggle)
-        layout.addLayout(row)
+        layout.addWidget(bar)
         self.recent = text_label('', 'recent')
         self.recent.setWordWrap(True)
         layout.addWidget(self.recent)
@@ -395,7 +438,12 @@ class MainWindow(QMainWindow):
         """返回包含 QQ 邮箱开关、打开入口和邮件待核对的页面。"""
         page = QWidget(objectName='mailPage')
         layout = QVBoxLayout(page)
-        row = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 4, 4)
+        layout.setSpacing(16)
+        bar = paper.slip()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(18, 12, 14, 12)
+        row.setSpacing(12)
         self.mail = QCheckBox('同时回复 QQ 邮箱', objectName='mailToggle')
         self.mail.setChecked(bool(trigger.load_allowed_mail()))
         self.mail.setToolTip('要先点"打开邮箱窗口"并登录测试邮箱。改了要重新开始才生效。')
@@ -403,7 +451,7 @@ class MainWindow(QMainWindow):
         self.mail_window = QPushButton('打开邮箱窗口', objectName='plain')
         self.mail_window.clicked.connect(self.open_mail)
         row.addWidget(self.mail_window)
-        layout.addLayout(row)
+        layout.addWidget(bar)
         self.mail_feedback = text_label('', 'secondary')
         self.mail_feedback.setWordWrap(True)
         layout.addWidget(self.mail_feedback)
@@ -462,7 +510,9 @@ class MainWindow(QMainWindow):
         """从托盘打开主窗口并切到电脑助手页。"""
         if self.can_resolve():
             self.navigation.setCurrentRow(2)
-            self.open_window()
+            # 从托盘或任务结束直接看电脑助手，不再停在房间里。
+            self.room.show_screen(animated=False)
+            self.open_window(room=False)
 
     def show_computer_state(self):
         """同步助手按钮和自动回复入口。"""
@@ -546,10 +596,12 @@ class MainWindow(QMainWindow):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
             self.open_window()
 
-    def open_window(self):
-        """助手空闲时刷新并唤起主窗口。"""
+    def open_window(self, room=True):
+        """助手空闲时刷新并唤起主窗口；room 为 True 时先停在书房画面，窗口已在前台则不动。"""
         if not self.can_resolve():
             return
+        if room and not self.isVisible():
+            self.room.show_room(animated=False)
         self.refresh()
         self.computer_page.check_display(self.app.screens())
         self.showNormal()

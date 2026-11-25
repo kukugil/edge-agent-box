@@ -99,31 +99,48 @@ def main(argv=None):
     args = parser.parse_args(argv)
     stop = (lambda: args.stop_file.exists()) if args.stop_file else (lambda: False)
 
+    allowed = trigger.load_allowed_mail() if args.mail else []
+    if args.mail and not allowed:
+        say('邮箱没接入：本机联系人文件里没有 allowed_mail（测试邮箱）')
+
+    def wechat_failed(why):
+        """微信起不来时：开了邮箱就只看邮箱，没开就停。交回 None 表示接着只看邮箱。"""
+        if stop():
+            return 0
+        if not allowed:
+            say('已停止：' + why)
+            return 2
+        say(f'状态：监听中（只看邮箱：{why}）')
+        return None
+
+    hwnd = None
     titles = contacts(list(trigger.WHITELIST), trigger.SIM_NAME)
     if titles is None:
-        say('已停止：白名单为空或有重名，分不清发给谁')
-        return 2
-    say(f'状态：正在启动，接入 {len(titles)} 个会话')
-    hwnd = bring_up(titles[0], stop)
-    if hwnd is None:
-        say('已停止' if stop() else '已停止：没能把微信切到前台并打开会话')
-        return 0 if stop() else 2
-    say('已把微信切到前台并打开会话')
-    if trigger.SIM_NAME in titles and not start_simulation(hwnd, stop):
-        say('已停止' if stop() else '已停止：文件传输助手模拟没开成')
-        return 0 if stop() else 2
-    mail_hwnd = None
-    if args.mail:
-        allowed = trigger.load_allowed_mail()
-        mail_hwnd = find_mail(stop) if allowed else None
-        if not allowed:
-            say('邮箱没接入：本机联系人文件里没有 allowed_mail（测试邮箱）')
-        elif mail_hwnd is None:
-            say('邮箱没接入：没找到开着 QQ 邮箱的专用 Chrome 窗口，先在托盘里点"打开邮箱窗口"并登录')
-    say('状态：监听中' + ('（微信 + 邮箱）' if mail_hwnd else ''))
+        code = wechat_failed('白名单为空或有重名，分不清发给谁')
+    else:
+        say(f'状态：正在启动，接入 {len(titles)} 个会话')
+        hwnd = bring_up(titles[0], stop)
+        if hwnd is None:
+            code = wechat_failed('没能把微信切到前台并打开会话')
+        else:
+            say('已把微信切到前台并打开会话')
+            code = None
+            if trigger.SIM_NAME in titles and not start_simulation(hwnd, stop):
+                hwnd = None
+                code = wechat_failed('文件传输助手模拟没开成')
+    if stop():
+        say('已停止')
+        return 0
+    if code is not None:
+        return code
+    mail_hwnd = find_mail(stop, tries=1) if allowed else None
+    if allowed and mail_hwnd is None:
+        say('邮箱窗口还没开：在托盘里点"打开邮箱窗口"并登录，开好后会自动接上')
+    if hwnd is not None:
+        say('状态：监听中' + ('（微信 + 邮箱）' if allowed else ''))
     try:
-        wechat_reply_flow.run(hwnd, args.hours * 3600, titles, mode='send', stop=stop,
-                              mail_hwnd=mail_hwnd, allowed_mail=trigger.load_allowed_mail() if mail_hwnd else ())
+        wechat_reply_flow.run(hwnd, args.hours * 3600, titles or [], mode='send', stop=stop,
+                              mail_hwnd=mail_hwnd, allowed_mail=allowed)
     except RuntimeError as exc:
         say(f'已停止：{exc}')
         return 2

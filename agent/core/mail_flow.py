@@ -22,12 +22,13 @@ from agent.core import reply_turn, trigger
 from agent.core.mail_check import LIST_TOP, NAV_RIGHT, judge_replied, top_subjects
 from agent.tools import center, click, paste_text, window_rect
 from agent.tools.inputs import InputRefused
-from agent.tools.web import body_text, open_folder, read_page, wait_page
+from agent.tools.web import body_text, find_mail_window, open_folder, read_page, wait_page
 from agent.tools.window import _foreground_is, _text, activate, user32, wintypes
 
 MAIL = 'QQ邮箱'            # 账本和托盘里这一路的名字
 POLL_EVERY = 3.0          # 读一次收件箱约 0.6 秒，太勤会拖慢微信那边的循环
 REFRESH_EVERY = 30.0      # 标题提示有新邮件时，最多这么久点一次「收件箱」刷新列表
+FIND_EVERY = 10.0         # 还没接上邮箱窗口时多久找一次：每次要把每个 Chrome 窗口的控件树读一遍
 REFRESH_IDLE = 120.0      # 标题门铃会自己消失（11/19 真机：几分钟后提示没了、列表仍是旧的），再按这个间隔定时刷新
 # 列表里今天的邮件显示"刚刚""N分钟前""N小时前"或时分，更早的显示日期（11/19 真机：刚到的显示"6分钟前"）
 TODAY = re.compile(r'^(刚刚|\d{1,2}分钟前|\d{1,2}小时前|\d{1,2}:\d{2})$')
@@ -40,7 +41,9 @@ def inbox_rows(items):
 
     输入：read_page 的结果
     输出：[{'sender', 'time', 'subject', 'preview', 'box': 标题那块的位置}]，从上到下
-    版式（11/19 真机）：每封占两行半，第一行左边发件人、右边时间；下面一行标题，再下面一行正文预览。
+    两种版式，按窗口宽窄自动切换：
+      多行（11/19 真机，窗口窄）：每封占两行半，第一行左边发件人、右边时间；下面一行标题，再下面一行正文预览。
+      单行（11/23 真机，窗口宽）：发件人、标题、预览、时间排在同一行。原来只认多行，宽窗口下一封都认不出来。
     """
     texts = [it for it in items if it['kind'] == 'TextControl' and it['box'][0] > NAV_RIGHT
              and it['box'][1] > LIST_TOP and it['text']]
@@ -49,7 +52,14 @@ def inbox_rows(items):
         x1, y1 = stamp['box'][0], stamp['box'][1]
         if x1 < 700 or len(stamp['text']) > 8 or not re.search(r'\d', stamp['text']):
             continue
-        sender = [it for it in texts if abs(it['box'][1] - y1) <= 3 and it['box'][0] < x1 - 100]
+        line = [it for it in texts if abs(it['box'][1] - y1) <= 3]
+        if any(it['box'][0] > x1 for it in line):
+            continue              # 时间在这一行最右边；不是的话多半是带数字的短预览
+        sender = sorted((it for it in line if it['box'][0] < x1 - 100), key=lambda it: it['box'][0])
+        if len(sender) >= 2:      # 单行版式：从左到右是发件人、标题、预览
+            rows.append({'sender': sender[0]['text'], 'time': stamp['text'], 'subject': sender[1]['text'],
+                         'preview': ' '.join(it['text'] for it in sender[2:]), 'box': sender[1]['box']})
+            continue
         subject = [it for it in texts if 15 <= it['box'][1] - y1 <= 32 and it['box'][0] < x1 - 100]
         preview = [it for it in texts if 33 <= it['box'][1] - y1 <= 55 and it['box'][0] < x1 - 100]
         if len(sender) != 1 or len(subject) != 1:
@@ -69,10 +79,24 @@ def on_inbox(items):
     return any(it['text'] == '收件箱' and it['box'][0] > NAV_RIGHT and it['box'][1] < 200 for it in items)
 
 
+def skip_reason(row, allowed):
+    """这一行为什么不回；该回交回 None。
+
+    名单只认邮箱地址或 QQ 号：列表里显示的是对方昵称时对不上，这封就不回（11/23 真机：真实来信被悄悄跳过）。
+    """
+    names = {name for addr in allowed for name in (addr, addr.split('@')[0])}
+    if row['subject'].startswith('回复：'):
+        return '是回出去的"回复："那封'
+    if row['sender'] not in names:
+        return '发件人不在邮件名单（名单只认邮箱地址或 QQ 号）'
+    if not TODAY.match(row['time']):
+        return '不是今天的'
+    return None
+
+
 def wanted(row, allowed):
     """这一行要不要回：发件人在白名单、是今天的、不是"回复："开头（自己回出去又落进收件箱的那封）。"""
-    names = {name for addr in allowed for name in (addr, addr.split('@')[0])}
-    return row['sender'] in names and bool(TODAY.match(row['time'])) and not row['subject'].startswith('回复：')
+    return skip_reason(row, allowed) is None
 
 
 class Abort(Exception):
@@ -82,8 +106,10 @@ class Abort(Exception):
 class MailWatcher:
     """盯一个 QQ 邮箱网页窗口。poll 只读不点；process 处理最早的一封。"""
 
-    def __init__(self, hwnd, store, allowed, *, log=print):
-        self.hwnd = hwnd
+    def __init__(self, hwnd, store, allowed, *, log=print, find=find_mail_window):
+        self.hwnd = hwnd          # None：邮箱窗口还没开，poll 里每 FIND_EVERY 秒找一次
+        self.find = find
+        self.next_find = 0.0
         self.store = store
         self.allowed = list(allowed)
         self.log = log
@@ -95,9 +121,29 @@ class MailWatcher:
         self.next_refresh = time.monotonic()   # 刚接入时读到的就是新的，2 分钟后再定时刷新
 
     # ---------- 发现 ----------
+    def attach(self):
+        """确认手上有邮箱窗口：窗口关了就放下，没有就隔一阵找一次。交回现在有没有窗口。
+
+        为什么在运行中找：原来只在启动时找一次，人先开监听、后开邮箱窗口，这一整轮都不看邮件（11/23 真机）。
+        换了窗口不清基线：还是同一个邮箱，清了会把已有的信当新信再回一遍。
+        """
+        if self.hwnd is not None and not user32.IsWindow(wintypes.HWND(self.hwnd)):
+            self.hwnd = None
+            self.log('邮箱窗口关了：重新点"打开邮箱窗口"后会自动接上')
+        if self.hwnd is not None:
+            return True
+        if time.monotonic() < self.next_find:
+            return False
+        self.next_find = time.monotonic() + FIND_EVERY
+        self.hwnd = self.find()
+        if self.hwnd is not None:
+            self.next_poll = 0.0
+            self.log('邮箱窗口接上了')
+        return self.hwnd is not None
+
     def poll(self):
         """读一次收件箱，登记新邮件。交回这次登记了几封。"""
-        if time.monotonic() < self.next_poll:
+        if not self.attach() or time.monotonic() < self.next_poll:
             return 0
         self.next_poll = time.monotonic() + POLL_EVERY
         if user32.IsIconic(wintypes.HWND(self.hwnd)):
@@ -123,7 +169,11 @@ class MailWatcher:
         self.seen |= keys
         count = 0
         for row in fresh:
-            if not wanted(row, self.allowed):
+            why = skip_reason(row, self.allowed)
+            if why:
+                # 不写发件人和标题：托盘动态演示时人人看得见。自己回出去的那封每次都有，不报
+                if not row['subject'].startswith('回复：'):
+                    self.log(f'来了 1 封新邮件，不回：{why}')
                 continue
             mail = {'who': 'them', 'kind': 'text', 'text': f"{row['subject']}\n{row['preview']}",
                     'at': datetime.now(), **{k: row[k] for k in ('sender', 'time', 'subject', 'preview')}}
@@ -139,6 +189,8 @@ class MailWatcher:
 
     def has_work(self):
         """有要用屏幕的事：待回复的邮件，或者该刷新列表了（标题门铃响了，或者离上次刷新已经 2 分钟）。"""
+        if self.hwnd is None:
+            return False
         if self.seen is not None and self._refresh_due():
             return True
         return self.store.can_reply(MAIL) and self.store.pending(MAIL) is not None
