@@ -29,3 +29,16 @@ research_notes/
 
 # 跑验收的日志
 mail_run*.log
+@AutomationLog.txt
+
+# 协作记忆记的是用户个人习惯，仓库公开，只留本机（11/24 定）
+docs/协作记忆.md
+
+# 视觉预览图约 300MB，只留本机
+docs/托盘视觉预览/
+
+# Codex 交付时整包拷出来的临时副本，代码已在 codex/tray-v2 提交
+tray-v2-overlay-delivery/
+
+# Git hook 依赖
+/node_modules/

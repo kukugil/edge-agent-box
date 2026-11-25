@@ -1,0 +1,35 @@
+{
+  "repo": "https://github.com/kukugil/edge-agent-box",
+  "feishu_doc": "https://prj2a0apzx.feishu.cn/wiki/VTrLw4fz1iKWRpkxNngcF5TgnAh",
+  "note": "每一项对应飞书周文档里一个格子。symbol 写函数名、类名或模块级常量名；kind 为 file 时链整个文件，tree 时链整个文件夹。where 说明格子在哪，改飞书时照着找。",
+  "items": [
+    {"id": "w1-r1", "week": 1, "item": "读界面结构", "path": "agent/tools/web.py", "symbol": "read_page",
+     "where": "第 1 周普通表格，最右列第 1 行"},
+    {"id": "w1-r2", "week": 1, "item": "自动发现微信新消息", "path": "agent/tools/screen.py", "symbol": "find_red_dots",
+     "where": "第 1 周普通表格，最右列第 2 行"},
+    {"id": "w1-r3", "week": 1, "item": "测试点击位置准确率", "path": "agent/tools/ground.py", "symbol": "ground",
+     "where": "第 1 周普通表格，最右列第 3 行"},
+    {"id": "w1-r4", "week": 1, "item": "拆分工具函数", "path": "agent/tools", "kind": "tree",
+     "where": "第 1 周普通表格，最右列第 4 行"},
+    {"id": "w1-r5", "week": 1, "item": "重测定位成绩", "path": "agent/demos/demo_ocr_ground.py", "kind": "file",
+     "where": "第 1 周普通表格，最右列第 5 行"},
+
+    {"id": "w2-r1", "week": 2, "item": "D5–D6 主循环", "path": "agent/core/graph.py", "symbol": "build_graph",
+     "where": "第 2 周内嵌表格 E2"},
+    {"id": "w2-r2", "week": 2, "item": "D7–D8 感知分流 + 邮件", "path": "agent/core/mail_nodes.py", "kind": "file",
+     "where": "第 2 周内嵌表格 E3"},
+    {"id": "w2-r3", "week": 2, "item": "D9–D10 触发器 + 会话队列", "path": "agent/core/trigger.py", "symbol": "serve",
+     "where": "第 2 周内嵌表格 E4"},
+    {"id": "w2-r4", "week": 2, "item": "演示稳健性", "path": "agent/core/graph.py", "symbol": "find_wechat",
+     "where": "第 2 周内嵌表格 E5"},
+
+    {"id": "w3-r1", "week": 3, "item": "D11 发送前拦截", "path": "agent/tools/inputs.py", "symbol": ["press", "paste_text"],
+     "where": "第 3 周内嵌表格 E2"},
+    {"id": "w3-r2", "week": 3, "item": "D12 发送前读回", "path": "agent/core/graph.py", "symbol": "send_permit",
+     "where": "第 3 周内嵌表格 E3"},
+    {"id": "w3-r3", "week": 3, "item": "D13 发送后核对", "path": "agent/core/check.py", "symbol": "judge_sent",
+     "where": "第 3 周内嵌表格 E4"},
+    {"id": "w3-r4", "week": 3, "item": "D14 阶段复盘", "kind": "none",
+     "where": "第 3 周内嵌表格 E5（没有代码，写 —）"}
+  ]
+}

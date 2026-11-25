@@ -1,0 +1,19 @@
+{
+ "commit": "5c1f5bbc65cb86651e153112551d0c4a57d5ea50",
+ "note": "飞书里现在实际写着的链接（11/12 手写，行号按旧算法，略宽）",
+ "links": {
+  "w1-r1": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/tools/web.py#L29-L67",
+  "w1-r2": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/tools/screen.py#L66-L84",
+  "w1-r3": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/tools/ground.py#L34-L56",
+  "w1-r4": "https://github.com/kukugil/edge-agent-box/tree/5c1f5bbc/agent/tools",
+  "w1-r5": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/demos/demo_ocr_ground.py",
+  "w2-r1": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/core/graph.py#L408-L429",
+  "w2-r2": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/core/mail_nodes.py",
+  "w2-r3": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/core/trigger.py#L355-L495",
+  "w2-r4": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/core/graph.py#L446-L460",
+  "w3-r1": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/tools/inputs.py#L106-L195",
+  "w3-r2": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/core/graph.py#L250-L271",
+  "w3-r3": "https://github.com/kukugil/edge-agent-box/blob/5c1f5bbc/agent/core/check.py#L80-L95",
+  "w3-r4": "—"
+ }
+}
